@@ -9,9 +9,12 @@ import (
 
 func Locally() {
 	handler := func(RW http.ResponseWriter, req *http.Request) {
-		fmt.Println("Local server received:", req.RequestURI)
-		io.WriteString(RW, "Hello from the local application\n")
-		fmt.Println(req.Method, req.RequestURI)
+		io.WriteString(RW, "Hello from the local application\n the body is : ")
+		reqBody, err := io.ReadAll(req.Body)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println(req.Method, req.RequestURI, string(reqBody), req.Header)
 	}
 
 	mux := http.NewServeMux()

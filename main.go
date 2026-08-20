@@ -2,11 +2,11 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
 
+	"devtunnel/internal/proxy"
 	"devtunnel/localServer"
 )
 
@@ -17,18 +17,22 @@ func main() {
 		os.Exit(1)
 	}
 	targetHost := "http://" + os.Args[1]
+	hostProxy := proxy.New(targetHost)
 	go localServer.Locally()
 	handler := func(RW http.ResponseWriter, req *http.Request) {
-		//resp, err := http.Get("http://localhost:3000" + req.RequestURI)
-		target := targetHost + req.RequestURI
-		fmt.Println("Forwarding to:", target)
-
-		resp, err := http.Get(target)
+		target := hostProxy.BuildTargetURL(req.RequestURI)
+		newReq, err := proxy.CreateRequest(req.Method, target, req.Body)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		proxy.CopyRequestHeaders(req.Header, newReq.Header)
+		resp, err := proxy.SendRequest(newReq)
 		if err != nil {
 			fmt.Println(err)
 		} else {
 			defer resp.Body.Close()
-			io.Copy(RW, resp.Body)
+			proxy.CopyResponseInfo(RW, resp)
 		}
 	}
 	mux := http.NewServeMux()
