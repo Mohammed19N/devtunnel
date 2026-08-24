@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"devtunnel/internal/proxy"
+	"devtunnel/internal/tunnel"
 	"devtunnel/localServer"
 )
 
@@ -19,6 +20,7 @@ func main() {
 	targetHost := "http://" + os.Args[1]
 	hostProxy := proxy.New(targetHost)
 	go localServer.Locally()
+	go tunnel.StartServer(":9000")
 	handler := func(RW http.ResponseWriter, req *http.Request) {
 		target := hostProxy.BuildTargetURL(req.RequestURI)
 		newReq, err := proxy.CreateRequest(req.Method, target, req.Body)
