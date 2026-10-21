@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hashicorp/yamux"
 	"github.com/mohammed19n/passway/internal/protocol"
 )
 
@@ -11,6 +12,8 @@ import (
 type Tunnel struct {
 	Name      string
 	SessionID string
+
+	session *yamux.Session
 }
 
 // ClaimRequest describes the name a client wants.
