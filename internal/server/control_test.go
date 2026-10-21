@@ -2,9 +2,9 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,20 +18,18 @@ import (
 
 func newTestServer(t *testing.T, auth Authenticator) (*Server, *httptest.Server) {
 	t.Helper()
+	ts := httptest.NewUnstartedServer(nil)
+	port := ts.Listener.Addr().(*net.TCPAddr).Port
 	srv := New(Config{
 		Domain:       "localhost",
 		PublicScheme: "http",
+		PublicPort:   port,
 		Auth:         auth,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	ts := httptest.NewServer(srv)
+	ts.Config.Handler = srv
+	ts.Start()
 	t.Cleanup(ts.Close)
-	u, _ := url.Parse(ts.URL)
-	var port int
-	if _, err := fmt.Sscanf(u.Port(), "%d", &port); err != nil {
-		t.Fatal(err)
-	}
-	srv.cfg.PublicPort = port
 	return srv, ts
 }
 
@@ -61,6 +59,7 @@ func dialRaw(t *testing.T, ts *httptest.Server, hello protocol.Hello) (protocol.
 		t.Fatal(err)
 	}
 	var resp protocol.HelloResponse
+	_ = st.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if err := protocol.ReadFrame(st, &resp); err != nil {
 		t.Fatal(err)
 	}
@@ -148,6 +147,27 @@ func TestDisconnectReleases(t *testing.T) {
 			t.Fatalf("not released: %+v", resp.Error)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestReconnectSameSessionWhileActive(t *testing.T) {
+	_, ts := newTestServer(t, nil)
+	resp, first := dialRaw(t, ts, hello("acme", "A"))
+	if resp.Ready == nil {
+		t.Fatalf("first: %+v", resp.Error)
+	}
+	resp, _ = dialRaw(t, ts, hello("acme", "A"))
+	if resp.Ready == nil || resp.Ready.Name != "acme" {
+		t.Fatalf("second: %+v", resp)
+	}
+	select {
+	case <-first.CloseChan():
+	case <-time.After(2 * time.Second):
+		t.Fatal("superseded session not closed")
+	}
+	resp, _ = dialRaw(t, ts, hello("acme", "B"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeNameTaken {
+		t.Fatalf("other session: %+v", resp)
 	}
 }
 

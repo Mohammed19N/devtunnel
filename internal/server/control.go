@@ -62,11 +62,12 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	t := &Tunnel{session: sess}
-	if err := s.registry.Claim(ClaimRequest{
+	replaced, err := s.registry.Claim(ClaimRequest{
 		Name:          hello.Name,
 		PreferredName: hello.PreferredName,
 		SessionID:     hello.SessionID,
-	}, t); err != nil {
+	}, t)
+	if err != nil {
 		var pe *protocol.Error
 		if !errors.As(err, &pe) {
 			pe = &protocol.Error{Code: protocol.CodeInternal, Message: err.Error()}
@@ -75,6 +76,10 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.registry.Release(t)
+	if replaced != nil && replaced.session != nil {
+		s.log.Info("superseding stale tunnel", "name", t.Name, "session", t.SessionID)
+		replaced.session.Close()
+	}
 
 	if err := protocol.WriteFrame(ctrl, protocol.HelloResponse{
 		Ready: &protocol.Ready{URL: s.PublicURL(t.Name), Name: t.Name},

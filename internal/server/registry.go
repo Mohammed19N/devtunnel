@@ -56,10 +56,11 @@ func (r *Registry) heldBy(name string) (hold, bool) {
 	return h, true
 }
 
-// available reports whether session may take name. Caller holds mu.
+// available reports whether session may take name. An active tunnel owned by
+// the same session does not block it (reconnect takeover). Caller holds mu.
 func (r *Registry) available(name, session string) bool {
-	if _, ok := r.active[name]; ok {
-		return false
+	if cur, ok := r.active[name]; ok {
+		return cur.SessionID == session
 	}
 	if h, ok := r.heldBy(name); ok && h.sessionID != session {
 		return false
@@ -67,33 +68,38 @@ func (r *Registry) available(name, session string) bool {
 	return true
 }
 
-func (r *Registry) grant(name string, req ClaimRequest, t *Tunnel) {
+// grant registers t under name and returns the same-session tunnel it superseded, if any.
+func (r *Registry) grant(name string, req ClaimRequest, t *Tunnel) (replaced *Tunnel) {
+	replaced = r.active[name]
 	delete(r.held, name)
 	t.Name = name
 	t.SessionID = req.SessionID
 	r.active[name] = t
+	return replaced
 }
 
-// Claim assigns a name to t per req and registers it.
-func (r *Registry) Claim(req ClaimRequest, t *Tunnel) error {
+// Claim assigns a name to t per req and registers it. If the name is already
+// active under the same SessionID (the client reconnected before the old
+// connection was noticed dead), t takes it over and the superseded tunnel is
+// returned so the caller can close it; its later Release is a no-op. A
+// different SessionID gets name_taken for an active name.
+func (r *Registry) Claim(req ClaimRequest, t *Tunnel) (replaced *Tunnel, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if req.Name != "" {
 		if err := ValidateName(req.Name); err != nil {
-			return err
+			return nil, err
 		}
 		if !r.available(req.Name, req.SessionID) {
-			return &protocol.Error{Code: protocol.CodeNameTaken, Message: "name " + req.Name + " is taken"}
+			return nil, &protocol.Error{Code: protocol.CodeNameTaken, Message: "name " + req.Name + " is taken"}
 		}
-		r.grant(req.Name, req, t)
-		return nil
+		return r.grant(req.Name, req, t), nil
 	}
 
 	if req.PreferredName != "" && ValidateName(req.PreferredName) == nil &&
 		r.available(req.PreferredName, req.SessionID) {
-		r.grant(req.PreferredName, req, t)
-		return nil
+		return r.grant(req.PreferredName, req, t), nil
 	}
 
 	for i := 0; i < 100; i++ {
@@ -105,9 +111,9 @@ func (r *Registry) Claim(req ClaimRequest, t *Tunnel) error {
 			continue
 		}
 		r.grant(name, req, t)
-		return nil
+		return nil, nil
 	}
-	return &protocol.Error{Code: protocol.CodeInternal, Message: "could not allocate a name"}
+	return nil, &protocol.Error{Code: protocol.CodeInternal, Message: "could not allocate a name"}
 }
 
 // Release removes t if it is the active holder of its name and starts the hold.

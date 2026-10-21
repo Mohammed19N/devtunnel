@@ -16,6 +16,11 @@ func wantCode(t *testing.T, err error, code string) {
 	}
 }
 
+func claimErr(r *Registry, req ClaimRequest, t *Tunnel) error {
+	_, err := r.Claim(req, t)
+	return err
+}
+
 func newTestRegistry() (*Registry, *time.Time) {
 	r := NewRegistry(time.Minute)
 	now := time.Unix(1000, 0)
@@ -26,19 +31,19 @@ func newTestRegistry() (*Registry, *time.Time) {
 func TestClaimExplicit(t *testing.T) {
 	r, _ := newTestRegistry()
 	a := &Tunnel{}
-	if err := r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, a); err != nil {
+	if _, err := r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, a); err != nil {
 		t.Fatal(err)
 	}
 	if got, ok := r.Lookup("acme"); !ok || got != a {
 		t.Fatalf("Lookup = %v, %v", got, ok)
 	}
-	wantCode(t, r.Claim(ClaimRequest{Name: "acme", SessionID: "B"}, &Tunnel{}), protocol.CodeNameTaken)
+	wantCode(t, claimErr(r, ClaimRequest{Name: "acme", SessionID: "B"}, &Tunnel{}), protocol.CodeNameTaken)
 }
 
 func TestClaimRandomWhenEmpty(t *testing.T) {
 	r, _ := newTestRegistry()
 	a := &Tunnel{}
-	if err := r.Claim(ClaimRequest{SessionID: "A"}, a); err != nil {
+	if _, err := r.Claim(ClaimRequest{SessionID: "A"}, a); err != nil {
 		t.Fatal(err)
 	}
 	if a.Name == "" || ValidateName(a.Name) != nil || a.SessionID != "A" {
@@ -49,11 +54,11 @@ func TestClaimRandomWhenEmpty(t *testing.T) {
 func TestHoldBlocksOthers(t *testing.T) {
 	r, _ := newTestRegistry()
 	a := &Tunnel{}
-	_ = r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, a)
+	_, _ = r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, a)
 	r.Release(a)
-	wantCode(t, r.Claim(ClaimRequest{Name: "acme", SessionID: "B"}, &Tunnel{}), protocol.CodeNameTaken)
+	wantCode(t, claimErr(r, ClaimRequest{Name: "acme", SessionID: "B"}, &Tunnel{}), protocol.CodeNameTaken)
 	b := &Tunnel{}
-	if err := r.Claim(ClaimRequest{PreferredName: "acme", SessionID: "B"}, b); err != nil {
+	if _, err := r.Claim(ClaimRequest{PreferredName: "acme", SessionID: "B"}, b); err != nil {
 		t.Fatal(err)
 	}
 	if b.Name == "acme" || b.Name == "" {
@@ -64,10 +69,10 @@ func TestHoldBlocksOthers(t *testing.T) {
 func TestHoldSameSession(t *testing.T) {
 	r, _ := newTestRegistry()
 	a := &Tunnel{}
-	_ = r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, a)
+	_, _ = r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, a)
 	r.Release(a)
 	a2 := &Tunnel{}
-	if err := r.Claim(ClaimRequest{PreferredName: "acme", SessionID: "A"}, a2); err != nil {
+	if _, err := r.Claim(ClaimRequest{PreferredName: "acme", SessionID: "A"}, a2); err != nil {
 		t.Fatal(err)
 	}
 	if a2.Name != "acme" {
@@ -78,10 +83,10 @@ func TestHoldSameSession(t *testing.T) {
 func TestHoldExpires(t *testing.T) {
 	r, now := newTestRegistry()
 	a := &Tunnel{}
-	_ = r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, a)
+	_, _ = r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, a)
 	r.Release(a)
 	*now = now.Add(time.Minute + time.Second)
-	if err := r.Claim(ClaimRequest{Name: "acme", SessionID: "B"}, &Tunnel{}); err != nil {
+	if _, err := r.Claim(ClaimRequest{Name: "acme", SessionID: "B"}, &Tunnel{}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -89,14 +94,38 @@ func TestHoldExpires(t *testing.T) {
 func TestReleaseStaleTunnel(t *testing.T) {
 	r, now := newTestRegistry()
 	a, b := &Tunnel{}, &Tunnel{}
-	_ = r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, a)
+	_, _ = r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, a)
 	r.Release(a)
 	*now = now.Add(time.Hour)
-	if err := r.Claim(ClaimRequest{Name: "acme", SessionID: "B"}, b); err != nil {
+	if _, err := r.Claim(ClaimRequest{Name: "acme", SessionID: "B"}, b); err != nil {
 		t.Fatal(err)
 	}
 	r.Release(a)
 	if got, ok := r.Lookup("acme"); !ok || got != b {
 		t.Fatalf("Lookup = %v, %v; want B", got, ok)
+	}
+}
+
+func TestClaimSameSessionTakesOverActive(t *testing.T) {
+	r, _ := newTestRegistry()
+	old := &Tunnel{}
+	_, _ = r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, old)
+	nt := &Tunnel{}
+	replaced, err := r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, nt)
+	if err != nil || replaced != old {
+		t.Fatalf("replaced=%v err=%v", replaced, err)
+	}
+	if got, _ := r.Lookup("acme"); got != nt {
+		t.Fatal("lookup should return new tunnel")
+	}
+	wantCode(t, claimErr(r, ClaimRequest{Name: "acme", SessionID: "B"}, &Tunnel{}), protocol.CodeNameTaken)
+	r.Release(old) // no-op
+	if got, _ := r.Lookup("acme"); got != nt {
+		t.Fatal("releasing superseded tunnel must be a no-op")
+	}
+	nt2 := &Tunnel{}
+	replaced, err = r.Claim(ClaimRequest{PreferredName: "acme", SessionID: "A"}, nt2)
+	if err != nil || replaced != nt || nt2.Name != "acme" {
+		t.Fatalf("preferred takeover: replaced=%v name=%q err=%v", replaced, nt2.Name, err)
 	}
 }
