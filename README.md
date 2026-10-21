@@ -1,129 +1,90 @@
-# DevTunnel
+# Passway
 
-A lightweight HTTP tunneling project written in Go.
+**An open-source, self-hostable ngrok alternative built for webhook debugging.**
+One command gives a local app a public URL.
 
-DevTunnel allows HTTP requests received by the tunnel server to be forwarded to a locally running application.
+> **Status: early development.** Milestone 1 (the core tunnel) works: you can
+> run your own relay server and expose a local HTTP app through it. Expect
+> rough edges and breaking changes.
 
-## Current Status
+## What works today
 
-### v0.1 — Basic HTTP Tunnel
+- `passway http <port>` exposes a local HTTP app at `http://<name>.<your-domain>`
+- Streaming request and response bodies
+- Automatic reconnect, keeping the same public URL
+- Token authentication (`--tokens`) and optional TLS on the relay server
+- A friendly 502 page when the tunnel is offline
 
-The first version provides a basic HTTP forwarding pipeline:
+## Quickstart (local)
 
-    Client
-      │
-      │ HTTP request
-      ▼
-    DevTunnel :8080
-      │
-      │ HTTP request
-      ▼
-    Local Application :3000
-      │
-      │ HTTP response
-      ▼
-    DevTunnel
-      │
-      ▼
-    Client
+Requires the Go version listed in `go.mod`.
 
-### Currently Supported
+```sh
+git clone https://github.com/Mohammed19N/devtunnel
+cd devtunnel
+```
 
-- HTTP request forwarding
-- Path forwarding
-- Query-string forwarding
-- Response forwarding
-- Configurable target host through command-line arguments
-- Basic request logging
-- Missing-target validation
+In one terminal, start the relay server:
 
-## Usage
+```sh
+go run ./cmd/passway-server --domain localhost
+```
 
-Clone the repository:
+In another, start something to expose on port 3000, for example:
 
-    git clone https://github.com/Mohammed19N/devtunnel
-    cd devtunnel
+```sh
+python3 -m http.server 3000
+```
 
-Run DevTunnel by providing the local application's address:
+In a third, open the tunnel:
 
-    go run . localhost:3000
+```sh
+go run ./cmd/passway http 3000
+```
 
-DevTunnel listens on:
+The CLI prints a public URL such as `http://brave-marmot-93.localhost:8080`.
+Request it:
 
-    localhost:8080
+```sh
+curl http://<name>.localhost:8080/
+```
 
-For example, a request to:
+`curl` resolves `*.localhost` to loopback by itself. Other clients may not, so
+send the tunnel's hostname as a `Host` header instead:
 
-    http://localhost:8080/hello?name=mohammed
+```sh
+curl -H 'Host: <name>.localhost:8080' http://127.0.0.1:8080/
+```
 
-will be forwarded to:
+## Running a server
 
-    http://localhost:3000/hello?name=mohammed
+```sh
+passway-server --domain tunnels.example.com \
+  --tls-addr :443 --tls-cert cert.pem --tls-key key.pem \
+  --addr :80 --tokens secret1,secret2
+```
 
-## Example
+| Flag | Default | Meaning |
+|---|---|---|
+| `--domain` | (required) | Base domain. Tunnels live at `<name>.<domain>`. |
+| `--addr` | `:8080` | Plain HTTP listener. With TLS enabled it redirects to HTTPS. Empty disables it. |
+| `--tls-addr` | (empty) | TLS listener, e.g. `:443`. |
+| `--tls-cert`, `--tls-key` | (empty) | Certificate and key files. Required with `--tls-addr`. |
+| `--tokens` | (empty) | Comma-separated accepted client tokens. Empty means **open**, for development only. |
+| `--public-port` | `0` | Port shown in public URLs, if it differs from the listener (for example behind a proxy). |
 
-Suppose a local application is running on:
-
-    localhost:3000
-
-Start DevTunnel:
-
-    go run . localhost:3000
-
-Then access:
-
-    http://localhost:8080/test
-
-The request will be forwarded to:
-
-    http://localhost:3000/test
-
-## Project Structure
-
-    devtunnel/
-    ├── main.go
-    ├── localServer/
-    │   └── localServer.go
-    ├── go.mod
-    ├── .gitignore
-    └── README.md
+You need a wildcard DNS record (`*.tunnels.example.com`) and a wildcard
+certificate for the domain. Clients authenticate with `passway login <token>`
+or the `PASSWAY_TOKEN` environment variable, and pick the server with
+`--server`.
 
 ## Roadmap
 
-### v0.1 — Basic HTTP Tunnel
-
-- [x] Start HTTP tunnel server
-- [x] Forward request paths
-- [x] Preserve query strings
-- [x] Forward responses
-- [x] Configure target through CLI arguments
-
-### v0.2 — Proper HTTP Proxying
-
-- [ ] Preserve HTTP methods
-- [ ] Forward request bodies
-- [ ] Forward request headers
-- [ ] Forward response headers
-- [ ] Improve error handling
-- [ ] Improve request/response logging
-
-### Future
-
-- [ ] TCP tunneling
-- [ ] Persistent connections
-- [ ] Concurrent connection handling
-- [ ] Public tunnel server
-- [ ] Authentication
-- [ ] Connection management
-- [ ] Graceful shutdown
-- [ ] Configuration files
-- [ ] Automated tests
-
-## About
-
-DevTunnel is a personal hobby project built with Go.
+Planned, not built yet: a local request inspector with replay, and a hosted
+cloud offering.
 
 ## License
 
-This project is currently intended for personal use and experimentation.
-
+The CLI and the rest of the repository are licensed under the [MIT License](LICENSE).
+The server (`cmd/passway-server`) is licensed under the
+[AGPL-3.0](cmd/passway-server/LICENSE).
