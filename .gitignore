@@ -16,3 +16,4 @@
 # Local tooling
 .claude/worktrees/
 .superpowers/
+/dist/
