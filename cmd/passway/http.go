@@ -21,10 +21,19 @@ func runHTTP(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 	server := fs.String("server", "", "passway server URL")
 	hostHeader := fs.String("host-header", "preserve", "preserve|rewrite")
 	insecure := fs.Bool("insecure", false, "skip TLS verification (dev only)")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	// Flags may appear before and/or after the target.
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return 2
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		pos = append(pos, fs.Arg(0))
+		args = fs.Args()[1:]
 	}
-	if fs.NArg() != 1 {
+	if len(pos) != 1 {
 		fmt.Fprintln(stderr, "usage: passway http [--name N] [--server URL] [--host-header preserve|rewrite] [--insecure] <target>")
 		return 2
 	}
@@ -32,7 +41,7 @@ func runHTTP(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 		fmt.Fprintf(stderr, "error: --host-header must be preserve or rewrite, got %q\n", *hostHeader)
 		return 2
 	}
-	target, err := client.ParseTarget(fs.Arg(0))
+	target, err := client.ParseTarget(pos[0])
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 2

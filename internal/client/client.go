@@ -201,7 +201,7 @@ func (c *runner) once(ctx context.Context) (connected bool, err error) {
 		c.cfg.OnReady(*resp.Ready)
 	}
 
-	hs := newHTTPServer(c.cfg)
+	hs := newHTTPServer(c.cfg, c.log)
 	serveDone := make(chan struct{})
 	go func() {
 		defer close(serveDone)

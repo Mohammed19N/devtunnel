@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,7 +69,7 @@ func dialRaw(t *testing.T, ts *httptest.Server, hello protocol.Hello) (protocol.
 }
 
 func hello(name, session string) protocol.Hello {
-	return protocol.Hello{Version: protocol.Version, Name: name, SessionID: session}
+	return protocol.Hello{Version: protocol.Version, Name: name, SessionID: session + strings.Repeat("-", 16)}
 }
 
 func TestHandshakeReady(t *testing.T) {
@@ -199,5 +201,32 @@ func TestHealthz(t *testing.T) {
 	b, _ := io.ReadAll(r.Body)
 	if r.StatusCode != 200 || string(b) != "ok" {
 		t.Fatalf("got %d %q", r.StatusCode, b)
+	}
+}
+
+func TestHandshakeShortSessionID(t *testing.T) {
+	_, ts := newTestServer(t, nil)
+	resp, _ := dialRaw(t, ts, protocol.Hello{Version: protocol.Version, Name: "acme", SessionID: "short"})
+	if resp.Error == nil || resp.Error.Code != protocol.CodeInternal || resp.Error.Message != "invalid session id" {
+		t.Fatalf("got %+v", resp)
+	}
+}
+
+func TestClientOpenedStreamsRejected(t *testing.T) {
+	_, ts := newTestServer(t, nil)
+	resp, sess := dialRaw(t, ts, hello("acme", "A"))
+	if resp.Ready == nil {
+		t.Fatalf("expected ready, got %+v", resp.Error)
+	}
+	st, err := sess.OpenStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := st.Read(make([]byte, 1)); err == nil || os.IsTimeout(err) {
+		t.Fatalf("read err = %v, want stream closed by server", err)
 	}
 }

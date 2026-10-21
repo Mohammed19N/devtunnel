@@ -143,3 +143,14 @@ func TestRunHTTPForwards(t *testing.T) {
 		t.Fatal("run did not return")
 	}
 }
+
+func TestRunHTTPFlagsAfterTarget(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"http", "3000", "--host-header", "bogus"}, &out, &errb, cfgPath(t)); code != 2 || !strings.Contains(errb.String(), "host-header must be") {
+		t.Fatalf("code=%d stderr=%q, want 2 from the bad flag value", code, errb.String())
+	}
+	errb.Reset()
+	if code := run(context.Background(), []string{"http", "3000", "extra"}, &out, &errb, cfgPath(t)); code != 2 || !strings.Contains(errb.String(), "usage") {
+		t.Fatalf("code=%d stderr=%q, want usage error", code, errb.String())
+	}
+}

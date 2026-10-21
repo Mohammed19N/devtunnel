@@ -247,6 +247,33 @@ func TestForwardedHeaders(t *testing.T) {
 	}
 }
 
+func TestForgedForwardedHeadersIgnored(t *testing.T) {
+	ch := make(chan http.Header, 1)
+	e, _ := setupEnv(t, opts{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ch <- r.Header.Clone()
+	})})
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:%d/", e.port), nil)
+	req.Host = e.publicHost
+	req.Header.Set("X-Forwarded-For", "6.6.6.6")
+	req.Header.Set("X-Forwarded-Host", "evil.example")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	resp, err := e.httpc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	h := <-ch
+	if got := h.Get("X-Forwarded-For"); got != "127.0.0.1" {
+		t.Errorf("X-Forwarded-For = %q", got)
+	}
+	if got := h.Get("X-Forwarded-Host"); got != e.publicHost {
+		t.Errorf("X-Forwarded-Host = %q, want %q", got, e.publicHost)
+	}
+	if got := h.Get("X-Forwarded-Proto"); got != "http" {
+		t.Errorf("X-Forwarded-Proto = %q", got)
+	}
+}
+
 func TestRewriteHost(t *testing.T) {
 	ch := make(chan string, 1)
 	e, _ := setupEnv(t, opts{rewriteHost: true, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -344,7 +371,7 @@ func TestLocalAppDown(t *testing.T) {
 	resp := get("/")
 	defer resp.Body.Close()
 	body := readAll(t, resp.Body)
-	if resp.StatusCode != 502 || !strings.Contains(body, "couldn't reach") || time.Since(start) > 3*time.Second {
+	if resp.StatusCode != 502 || !strings.Contains(body, "couldn't reach") || strings.Contains(body, "refused") || time.Since(start) > 3*time.Second {
 		t.Fatalf("got %d %q after %v", resp.StatusCode, body, time.Since(start))
 	}
 }

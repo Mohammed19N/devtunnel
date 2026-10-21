@@ -70,7 +70,8 @@ passway-server --domain tunnels.example.com \
 | `--addr` | `:8080` | Plain HTTP listener. With TLS enabled it redirects to HTTPS. Empty disables it. |
 | `--tls-addr` | (empty) | TLS listener, e.g. `:443`. |
 | `--tls-cert`, `--tls-key` | (empty) | Certificate and key files. Required with `--tls-addr`. |
-| `--tokens` | (empty) | Comma-separated accepted client tokens. Empty means **open**, for development only. |
+| `--tokens` | (empty) | Comma-separated accepted client tokens. Required unless the domain is `localhost` (or `*.localhost`) or `--open` is given. |
+| `--open` | `false` | Allow running with no `--tokens` on a non-localhost domain. That makes an open relay anyone can use; the server refuses to start otherwise. |
 | `--public-port` | `0` | Port shown in public URLs, if it differs from the listener (for example behind a proxy). |
 
 You need a wildcard DNS record (`*.tunnels.example.com`) and a wildcard

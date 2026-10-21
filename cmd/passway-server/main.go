@@ -21,6 +21,8 @@ import (
 	"github.com/mohammed19n/passway/internal/server"
 )
 
+const idleTimeout = 120 * time.Second
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	err := run(ctx, os.Args[1:], os.Stderr, nil)
@@ -45,13 +47,17 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	tlsAddr := fs.String("tls-addr", "", "TLS listen address")
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (required with --tls-addr)")
 	tlsKey := fs.String("tls-key", "", "TLS key file (required with --tls-addr)")
-	tokens := fs.String("tokens", "", "comma-separated accepted tokens (empty = open, development only)")
+	tokens := fs.String("tokens", "", "comma-separated accepted tokens (empty = open relay; needs --open unless domain is localhost)")
+	open := fs.Bool("open", false, "allow running without --tokens on a non-localhost domain")
 	publicPort := fs.Int("public-port", 0, "port shown in public URLs (0 = the listener's port)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *domain == "" {
 		return errors.New("--domain is required")
+	}
+	if strings.TrimSpace(*tokens) == "" && !*open && *domain != "localhost" && !strings.HasSuffix(*domain, ".localhost") {
+		return fmt.Errorf("refusing to run an open relay on %s: set --tokens or pass --open", *domain)
 	}
 	useTLS := *tlsAddr != ""
 	var cert tls.Certificate
@@ -127,7 +133,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	var servers []*http.Server
 	errc := make(chan error, 2)
 	serve := func(h http.Handler, ln net.Listener, kind string) {
-		hs := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
+		hs := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: idleTimeout}
 		servers = append(servers, hs)
 		go func() {
 			log.Info("listening", "kind", kind, "addr", ln.Addr().String(), "domain", *domain)

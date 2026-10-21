@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"html/template"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -27,7 +29,7 @@ func writeOffline(w http.ResponseWriter, host string) {
 
 // newTunnelProxy builds t's reverse proxy and transport. t.Name is read at
 // request time; Registry.Claim sets it before the tunnel becomes visible.
-func newTunnelProxy(t *Tunnel) {
+func newTunnelProxy(t *Tunnel, log *slog.Logger) {
 	t.transport = &http.Transport{
 		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
 			st, err := t.session.Open()
@@ -53,7 +55,10 @@ func newTunnelProxy(t *Tunnel) {
 			pr.Out.Host = pr.In.Host
 			pr.SetXForwarded()
 		},
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, _ error) {
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if !errors.Is(err, context.Canceled) {
+				log.Warn("proxy error", "name", t.Name, "err", err)
+			}
 			writeOffline(w, r.Host)
 		},
 	}

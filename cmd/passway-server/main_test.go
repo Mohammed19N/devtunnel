@@ -139,3 +139,21 @@ func TestRunRedirectsToTLS(t *testing.T) {
 		t.Fatalf("run returned %v, want nil", err)
 	}
 }
+
+func TestRunRefusesOpenRelay(t *testing.T) {
+	err := run(context.Background(), []string{"--domain", "example.test", "--addr", "127.0.0.1:0"}, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "--open") {
+		t.Fatalf("err = %v, want refusal mentioning --open", err)
+	}
+}
+
+func TestRunOpenFlagAllowsOpenRelay(t *testing.T) {
+	_, stop := start(t, []string{"--domain", "example.test", "--addr", "127.0.0.1:0", "--open"})
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+	_, stop = start(t, []string{"--domain", "example.test", "--addr", "127.0.0.1:0", "--tokens", "secret"})
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+}

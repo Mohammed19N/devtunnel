@@ -46,14 +46,14 @@ func (l *sessionListener) Accept() (net.Conn, error) {
 func (l *sessionListener) Close() error   { return l.sess.Close() }
 func (l *sessionListener) Addr() net.Addr { return l.sess.LocalAddr() }
 
-func newHTTPServer(cfg Config) *http.Server {
+func newHTTPServer(cfg Config, log *slog.Logger) *http.Server {
 	return &http.Server{
-		Handler:           logRequests(newProxy(cfg), cfg.OnRequest),
+		Handler:           logRequests(newProxy(cfg, log), cfg.OnRequest),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 }
 
-func newProxy(cfg Config) http.Handler {
+func newProxy(cfg Config, log *slog.Logger) http.Handler {
 	target := cfg.Target
 	return &httputil.ReverseProxy{
 		FlushInterval: -1,
@@ -69,9 +69,10 @@ func newProxy(cfg Config) http.Handler {
 			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
+			log.Warn("local target unreachable", "target", target.String(), "err", err)
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusBadGateway)
-			fmt.Fprintf(w, "Passway couldn't reach %s: %v", target, err)
+			fmt.Fprintf(w, "Passway couldn't reach %s", target)
 		},
 	}
 }

@@ -12,7 +12,10 @@ import (
 	"github.com/mohammed19n/passway/internal/protocol"
 )
 
-const handshakeTimeout = 10 * time.Second
+const (
+	handshakeTimeout = 10 * time.Second
+	minSessionIDLen  = 16
+)
 
 func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, nil)
@@ -26,6 +29,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	cfg.EnableKeepAlive = true
 	cfg.KeepAliveInterval = 15 * time.Second
 	cfg.LogOutput = io.Discard
+	cfg.AcceptBacklog = 16
 	sess, err := yamux.Server(conn, cfg)
 	if err != nil {
 		conn.Close()
@@ -53,7 +57,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if hello.Version != protocol.Version {
-		fail(&protocol.Error{Code: protocol.CodeVersionMismatch, Message: "unsupported protocol version"})
+		fail(&protocol.Error{Code: protocol.CodeVersionMismatch, Message: "unsupported protocol version; please upgrade passway"})
 		return
 	}
 	if _, err := s.cfg.Auth.Authenticate(r.Context(), hello.Token); err != nil {
@@ -61,8 +65,13 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(hello.SessionID) < minSessionIDLen {
+		fail(&protocol.Error{Code: protocol.CodeInternal, Message: "invalid session id"})
+		return
+	}
+
 	t := &Tunnel{session: sess}
-	newTunnelProxy(t)
+	newTunnelProxy(t, s.log)
 	replaced, err := s.registry.Claim(ClaimRequest{
 		Name:          hello.Name,
 		PreferredName: hello.PreferredName,
@@ -81,7 +90,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		t.transport.CloseIdleConnections()
 	}()
 	if replaced != nil && replaced.session != nil {
-		s.log.Info("superseding stale tunnel", "name", t.Name, "session", t.SessionID)
+		s.log.Info("superseding stale tunnel", "name", t.Name, "session", t.SessionID[:8])
 		replaced.session.Close()
 	}
 
@@ -90,8 +99,20 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		return
 	}
-	s.log.Info("tunnel up", "name", t.Name, "session", t.SessionID)
-	defer s.log.Info("tunnel down", "name", t.Name, "session", t.SessionID)
+	s.log.Info("tunnel up", "name", t.Name, "session", t.SessionID[:8])
+	defer s.log.Info("tunnel down", "name", t.Name, "session", t.SessionID[:8])
+
+	// Clients never open streams after the handshake; reject any that try so
+	// they cannot pile up in yamux's accept backlog.
+	go func() {
+		for {
+			st, err := sess.Accept()
+			if err != nil {
+				return
+			}
+			st.Close()
+		}
+	}()
 
 	// EOF on the control stream ends the session.
 	go func() {
