@@ -12,3 +12,7 @@
 # IDE/editor files
 .vscode/
 .idea/
+
+# Local tooling
+.claude/worktrees/
+.superpowers/
