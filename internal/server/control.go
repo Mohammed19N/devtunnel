@@ -62,6 +62,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	t := &Tunnel{session: sess}
+	newTunnelProxy(t)
 	replaced, err := s.registry.Claim(ClaimRequest{
 		Name:          hello.Name,
 		PreferredName: hello.PreferredName,
@@ -75,7 +76,10 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		fail(pe)
 		return
 	}
-	defer s.registry.Release(t)
+	defer func() {
+		s.registry.Release(t)
+		t.transport.CloseIdleConnections()
+	}()
 	if replaced != nil && replaced.session != nil {
 		s.log.Info("superseding stale tunnel", "name", t.Name, "session", t.SessionID)
 		replaced.session.Close()

@@ -64,10 +64,10 @@ func (s *Server) CloseTunnels() {
 	}
 }
 
-// ServeHTTP routes requests. Only base-domain routes exist for now.
+// ServeHTTP routes requests. Base-domain routes are served here; <label>.<Domain> goes to a tunnel.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if hostOnly(r.Host) != s.cfg.Domain {
-		http.NotFound(w, r)
+	if host := hostOnly(r.Host); host != s.cfg.Domain {
+		s.serveEdge(w, r, host)
 		return
 	}
 	switch r.URL.Path {

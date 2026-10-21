@@ -1,6 +1,8 @@
 package server
 
 import (
+	"net/http"
+	"net/http/httputil"
 	"sync"
 	"time"
 
@@ -13,7 +15,9 @@ type Tunnel struct {
 	Name      string
 	SessionID string
 
-	session *yamux.Session
+	session   *yamux.Session
+	proxy     *httputil.ReverseProxy
+	transport *http.Transport
 }
 
 // ClaimRequest describes the name a client wants.
