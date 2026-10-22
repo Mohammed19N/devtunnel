@@ -157,3 +157,21 @@ func TestRunOpenFlagAllowsOpenRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPublicPort(t *testing.T) {
+	for _, c := range []struct {
+		scheme                 string
+		listen, override, want int
+	}{
+		{"http", 8080, 0, 8080},
+		{"http", 80, 0, 0},
+		{"https", 443, 0, 0},
+		{"https", 9443, 0, 9443},
+		{"https", 9443, 443, 0},
+		{"http", 8080, 9000, 9000},
+	} {
+		if got := publicPort(c.scheme, c.listen, c.override); got != c.want {
+			t.Errorf("publicPort(%q,%d,%d) = %d, want %d", c.scheme, c.listen, c.override, got, c.want)
+		}
+	}
+}

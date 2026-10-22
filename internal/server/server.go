@@ -19,6 +19,8 @@ type Config struct {
 	Auth         Authenticator // nil = StaticTokens(nil)
 	NameHold     time.Duration // 0 = 2 * time.Minute
 	Logger       *slog.Logger  // nil = slog.Default()
+
+	MaxConnsPerTunnel int // concurrent proxied connections per tunnel; 0 = 64
 }
 
 // Server is the Passway tunnel server.
@@ -36,6 +38,9 @@ func New(cfg Config) *Server {
 	}
 	if cfg.NameHold == 0 {
 		cfg.NameHold = 2 * time.Minute
+	}
+	if cfg.MaxConnsPerTunnel == 0 {
+		cfg.MaxConnsPerTunnel = 64
 	}
 	if cfg.Auth == nil {
 		cfg.Auth = StaticTokens(nil)

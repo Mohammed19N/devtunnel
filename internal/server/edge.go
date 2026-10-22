@@ -29,21 +29,44 @@ func writeOffline(w http.ResponseWriter, host string) {
 
 // newTunnelProxy builds t's reverse proxy and transport. t.Name is read at
 // request time; Registry.Claim sets it before the tunnel becomes visible.
-func newTunnelProxy(t *Tunnel, log *slog.Logger) {
+func newTunnelProxy(t *Tunnel, maxConns int, log *slog.Logger) {
 	t.transport = &http.Transport{
-		DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-			st, err := t.session.Open()
-			if err != nil {
-				return nil, err
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			type result struct {
+				conn net.Conn
+				err  error
 			}
-			// The client blocks in Accept until it reads this header.
-			if err := protocol.WriteFrame(st, protocol.StreamHeader{Kind: protocol.KindHTTP}); err != nil {
-				st.Close()
-				return nil, err
+			// session.Open can block (e.g. a full accept backlog), so run it
+			// off-thread and let ctx abandon it.
+			ch := make(chan result, 1)
+			go func() {
+				st, err := t.session.Open()
+				if err != nil {
+					ch <- result{nil, err}
+					return
+				}
+				// The client blocks in Accept until it reads this header.
+				if err := protocol.WriteFrame(st, protocol.StreamHeader{Kind: protocol.KindHTTP}); err != nil {
+					st.Close()
+					ch <- result{nil, err}
+					return
+				}
+				ch <- result{st, nil}
+			}()
+			select {
+			case r := <-ch:
+				return r.conn, r.err
+			case <-ctx.Done():
+				go func() {
+					if r := <-ch; r.conn != nil {
+						r.conn.Close()
+					}
+				}()
+				return nil, ctx.Err()
 			}
-			return st, nil
 		},
-		MaxIdleConnsPerHost: 16,
+		MaxConnsPerHost:     maxConns,
+		MaxIdleConnsPerHost: min(16, maxConns),
 		IdleConnTimeout:     90 * time.Second,
 		ForceAttemptHTTP2:   false,
 	}

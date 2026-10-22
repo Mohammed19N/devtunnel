@@ -120,10 +120,21 @@ func (r *Registry) Claim(req ClaimRequest, t *Tunnel) (replaced *Tunnel, err err
 	return nil, &protocol.Error{Code: protocol.CodeInternal, Message: "could not allocate a name"}
 }
 
+// purgeExpired deletes every expired hold. Caller holds mu.
+func (r *Registry) purgeExpired() {
+	now := r.now()
+	for name, h := range r.held {
+		if now.After(h.releasedAt.Add(r.hold)) {
+			delete(r.held, name)
+		}
+	}
+}
+
 // Release removes t if it is the active holder of its name and starts the hold.
 func (r *Registry) Release(t *Tunnel) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.purgeExpired()
 	if r.active[t.Name] != t {
 		return
 	}

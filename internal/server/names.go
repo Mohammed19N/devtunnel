@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"regexp"
+	"strings"
 
 	"github.com/mohammed19n/passway/internal/protocol"
 )
@@ -26,7 +27,24 @@ func ValidateName(name string) error {
 	if reserved[name] {
 		return &protocol.Error{Code: protocol.CodeInvalidName, Message: fmt.Sprintf("name %q is reserved", name)}
 	}
+	if w := blockedWord(name); w != "" {
+		return &protocol.Error{Code: protocol.CodeInvalidName, Message: fmt.Sprintf("name %q contains a blocked word", name)}
+	}
 	return nil
+}
+
+// blockedWords are substrings that make a subdomain unavailable (phishing /
+// brand-impersonation abuse).
+var blockedWords = []string{"paypal", "login", "signin", "logon", "bank", "secure", "verify", "wallet", "password", "apple", "google", "microsoft", "office365", "outlook", "amazon", "facebook", "instagram", "whatsapp", "netflix", "coinbase", "binance", "metamask", "stripe", "github"}
+
+// blockedWord returns the first blocked word contained in name, or "".
+func blockedWord(name string) string {
+	for _, w := range blockedWords {
+		if strings.Contains(name, w) {
+			return w
+		}
+	}
+	return ""
 }
 
 var adjectives = []string{

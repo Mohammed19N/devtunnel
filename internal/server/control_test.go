@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,15 +22,25 @@ import (
 
 func newTestServer(t *testing.T, auth Authenticator) (*Server, *httptest.Server) {
 	t.Helper()
+	return newTestServerCfg(t, auth, nil)
+}
+
+// newTestServerCfg is newTestServer with a hook to adjust the Config.
+func newTestServerCfg(t *testing.T, auth Authenticator, mutate func(*Config)) (*Server, *httptest.Server) {
+	t.Helper()
 	ts := httptest.NewUnstartedServer(nil)
 	port := ts.Listener.Addr().(*net.TCPAddr).Port
-	srv := New(Config{
+	cfg := Config{
 		Domain:       "localhost",
 		PublicScheme: "http",
 		PublicPort:   port,
 		Auth:         auth,
 		Logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	srv := New(cfg)
 	ts.Config.Handler = srv
 	ts.Start()
 	t.Cleanup(ts.Close)
@@ -228,5 +240,165 @@ func TestClientOpenedStreamsRejected(t *testing.T) {
 	_ = st.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if _, err := st.Read(make([]byte, 1)); err == nil || os.IsTimeout(err) {
 		t.Fatalf("read err = %v, want stream closed by server", err)
+	}
+}
+
+// streamListener adapts a client-side yamux session into a net.Listener that
+// consumes the per-stream header the server writes first.
+type streamListener struct{ sess *yamux.Session }
+
+func (l streamListener) Accept() (net.Conn, error) {
+	for {
+		st, err := l.sess.AcceptStream()
+		if err != nil {
+			return nil, err
+		}
+		var h protocol.StreamHeader
+		if err := protocol.ReadFrame(st, &h); err != nil {
+			st.Close()
+			continue
+		}
+		return st, nil
+	}
+}
+func (l streamListener) Close() error   { return l.sess.Close() }
+func (l streamListener) Addr() net.Addr { return l.sess.Addr() }
+
+func TestTunnelConnCap(t *testing.T) {
+	_, ts := newTestServerCfg(t, nil, func(c *Config) { c.MaxConnsPerTunnel = 2 })
+	resp, sess := dialRaw(t, ts, hello("capped", "A"))
+	if resp.Ready == nil {
+		t.Fatalf("ready: %+v", resp.Error)
+	}
+	var inflight, max atomic.Int32
+	release := make(chan struct{})
+	hs := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := inflight.Add(1)
+		for {
+			m := max.Load()
+			if n <= m || max.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		<-release
+		inflight.Add(-1)
+		w.WriteHeader(200)
+	})}
+	go hs.Serve(streamListener{sess})
+	t.Cleanup(func() { hs.Close() })
+
+	u, _ := url.Parse(ts.URL)
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 10 * time.Second}
+	var wg sync.WaitGroup
+	codes := make([]int, 5)
+	for i := range codes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+			req.Host = "capped.localhost:" + u.Port()
+			r, err := client.Do(req)
+			if err != nil {
+				return
+			}
+			r.Body.Close()
+			codes[i] = r.StatusCode
+		}()
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for inflight.Load() != 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("in-flight = %d, want 2", inflight.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := max.Load(); got != 2 {
+		t.Fatalf("max in-flight = %d, want 2", got)
+	}
+	close(release)
+	wg.Wait()
+	for i, c := range codes {
+		if c != 200 {
+			t.Errorf("request %d: status %d, want 200", i, c)
+		}
+	}
+}
+
+// The client never accepts streams, so yamux SYNs are never ACKed. After the
+// server's accept backlog (16) fills, session.Open blocks; DialContext must
+// still honour the request context.
+func TestDialHonoursContext(t *testing.T) {
+	_, ts := newTestServerCfg(t, nil, func(c *Config) { c.MaxConnsPerTunnel = 64 })
+	resp, _ := dialRaw(t, ts, hello("stuck", "A"))
+	if resp.Ready == nil {
+		t.Fatalf("ready: %+v", resp.Error)
+	}
+	u, _ := url.Parse(ts.URL)
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 300 * time.Millisecond}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var wg sync.WaitGroup
+		for i := 0; i < 20; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+				req.Host = "stuck.localhost:" + u.Port()
+				if r, err := client.Do(req); err == nil {
+					r.Body.Close()
+				}
+			}()
+		}
+		wg.Wait()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("requests did not return within 2s: DialContext ignores ctx")
+	}
+}
+
+// The HTTP-level test above cannot fail on its own (the client timeout fires
+// regardless), so this one pins DialContext directly: with the accept backlog
+// full, session.Open blocks, and DialContext must return when ctx expires.
+func TestDialContextReturnsOnCancelWhenOpenBlocks(t *testing.T) {
+	srv, ts := newTestServerCfg(t, nil, nil)
+	resp, _ := dialRaw(t, ts, hello("stuck", "A"))
+	if resp.Ready == nil {
+		t.Fatalf("ready: %+v", resp.Error)
+	}
+	tun, ok := srv.registry.Lookup("stuck")
+	if !ok {
+		t.Fatal("tunnel not registered")
+	}
+	// Exhaust the unacknowledged-stream backlog; the client never accepts.
+	go func() {
+		for i := 0; i < 64; i++ {
+			if _, err := tun.session.Open(); err != nil {
+				return
+			}
+		}
+	}()
+	time.Sleep(300 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		c, err := tun.transport.DialContext(ctx, "tcp", "x:80")
+		if c != nil {
+			c.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("dial succeeded unexpectedly")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DialContext did not return after ctx expired")
 	}
 }

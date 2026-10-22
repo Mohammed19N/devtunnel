@@ -129,3 +129,23 @@ func TestClaimSameSessionTakesOverActive(t *testing.T) {
 		t.Fatalf("preferred takeover: replaced=%v name=%q err=%v", replaced, nt2.Name, err)
 	}
 }
+
+func TestReleasePurgesExpiredHolds(t *testing.T) {
+	r, now := newTestRegistry()
+	a := &Tunnel{}
+	if _, err := r.Claim(ClaimRequest{Name: "aaa", SessionID: "s1"}, a); err != nil {
+		t.Fatal(err)
+	}
+	r.Release(a)
+	*now = now.Add(time.Minute + time.Second)
+	b := &Tunnel{}
+	if _, err := r.Claim(ClaimRequest{Name: "bbb", SessionID: "s2"}, b); err != nil {
+		t.Fatal(err)
+	}
+	r.Release(b)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.held["bbb"]; len(r.held) != 1 || !ok {
+		t.Fatalf("held = %v, want only bbb", r.held)
+	}
+}

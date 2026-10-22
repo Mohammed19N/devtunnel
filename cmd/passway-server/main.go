@@ -49,7 +49,8 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	tlsKey := fs.String("tls-key", "", "TLS key file (required with --tls-addr)")
 	tokens := fs.String("tokens", "", "comma-separated accepted tokens (empty = open relay; needs --open unless domain is localhost)")
 	open := fs.Bool("open", false, "allow running without --tokens on a non-localhost domain")
-	publicPort := fs.Int("public-port", 0, "port shown in public URLs (0 = the listener's port)")
+	publicPortFlag := fs.Int("public-port", 0, "port shown in public URLs (0 = the listener's port)")
+	maxConns := fs.Int("max-conns-per-tunnel", 64, "max concurrent proxied connections per tunnel")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -103,13 +104,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	if useTLS {
 		scheme, pubLn = "https", tlsLn
 	}
-	port := *publicPort
-	if port == 0 {
-		port = portOf(pubLn.Addr())
-	}
-	if (scheme == "http" && port == 80) || (scheme == "https" && port == 443) {
-		port = 0
-	}
+	port := publicPort(scheme, portOf(pubLn.Addr()), *publicPortFlag)
 
 	var authenticator server.Authenticator
 	if *tokens != "" {
@@ -128,6 +123,8 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		PublicPort:   port,
 		Auth:         authenticator,
 		Logger:       log,
+
+		MaxConnsPerTunnel: *maxConns,
 	})
 
 	var servers []*http.Server
@@ -169,6 +166,19 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		}
 	}
 	return runErr
+}
+
+// publicPort returns the port to show in public URLs: override if set, else
+// the listener's port, with the scheme's default port reported as 0 (omitted).
+func publicPort(scheme string, listenPort, override int) int {
+	port := listenPort
+	if override != 0 {
+		port = override
+	}
+	if (scheme == "http" && port == 80) || (scheme == "https" && port == 443) {
+		return 0
+	}
+	return port
 }
 
 func portOf(a net.Addr) int {
