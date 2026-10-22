@@ -51,6 +51,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	open := fs.Bool("open", false, "allow running without --tokens on a non-localhost domain")
 	publicPortFlag := fs.Int("public-port", 0, "port shown in public URLs (0 = the listener's port)")
 	maxConns := fs.Int("max-conns-per-tunnel", 64, "max concurrent proxied connections per tunnel")
+	rateLimit := fs.Int("rate-limit", 0, "max requests per minute per tunnel (0 = unlimited)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -125,6 +126,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		Logger:       log,
 
 		MaxConnsPerTunnel: *maxConns,
+		RateLimit:         *rateLimit,
 	})
 
 	var servers []*http.Server

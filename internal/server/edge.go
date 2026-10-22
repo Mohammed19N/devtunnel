@@ -86,5 +86,12 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 		renderPage(w, r, pageOffline, pageData{Host: r.Host})
 		return
 	}
+	if s.limiter != nil {
+		if ok, retry := s.limiter.Allow(t.Name); !ok {
+			secs := int((retry + time.Second - 1) / time.Second)
+			renderPage(w, r, pageRateLimited, pageData{Host: r.Host, RetryIn: max(secs, 1)})
+			return
+		}
+	}
 	t.proxy.ServeHTTP(w, r)
 }

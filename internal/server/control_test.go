@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -400,5 +401,39 @@ func TestDialContextReturnsOnCancelWhenOpenBlocks(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("DialContext did not return after ctx expired")
+	}
+}
+
+func TestEdgeRateLimited(t *testing.T) {
+	_, ts := newTestServerCfg(t, nil, func(c *Config) { c.RateLimit = 2 })
+	resp, sess := dialRaw(t, ts, hello("limited", "A"))
+	if resp.Ready == nil {
+		t.Fatalf("ready: %+v", resp.Error)
+	}
+	hs := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})}
+	go hs.Serve(streamListener{sess})
+	t.Cleanup(func() { hs.Close() })
+
+	u, _ := url.Parse(ts.URL)
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 10 * time.Second}
+	var last *http.Response
+	for i, want := range []int{200, 200, 429} {
+		req, _ := http.NewRequest("GET", ts.URL+"/", nil)
+		req.Host = "limited.localhost:" + u.Port()
+		r, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != want {
+			t.Fatalf("request %d: status %d, want %d", i, r.StatusCode, want)
+		}
+		last = r
+	}
+	n, err := strconv.Atoi(last.Header.Get("Retry-After"))
+	if err != nil || n < 1 {
+		t.Fatalf("Retry-After = %q", last.Header.Get("Retry-After"))
 	}
 }

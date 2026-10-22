@@ -21,6 +21,7 @@ type Config struct {
 	Logger       *slog.Logger  // nil = slog.Default()
 
 	MaxConnsPerTunnel int // concurrent proxied connections per tunnel; 0 = 64
+	RateLimit         int // requests per minute per tunnel; 0 = unlimited
 }
 
 // Server is the Passway tunnel server.
@@ -28,6 +29,7 @@ type Server struct {
 	cfg      Config
 	registry *Registry
 	log      *slog.Logger
+	limiter  *RateLimiter // nil = unlimited
 }
 
 // New creates a Server from cfg, applying defaults.
@@ -48,7 +50,11 @@ func New(cfg Config) *Server {
 	if st, ok := cfg.Auth.(StaticTokens); ok && len(st) == 0 {
 		cfg.Logger.Warn("no auth tokens configured: every client token is accepted (development only)")
 	}
-	return &Server{cfg: cfg, registry: NewRegistry(cfg.NameHold), log: cfg.Logger}
+	s := &Server{cfg: cfg, registry: NewRegistry(cfg.NameHold), log: cfg.Logger}
+	if cfg.RateLimit > 0 {
+		s.limiter = NewRateLimiter(cfg.RateLimit)
+	}
+	return s
 }
 
 // PublicURL returns the public URL for a tunnel name.
