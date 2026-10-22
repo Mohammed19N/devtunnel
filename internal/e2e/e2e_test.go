@@ -291,7 +291,13 @@ func TestRewriteHost(t *testing.T) {
 
 func TestOfflineUnknown(t *testing.T) {
 	e, _ := setupEnv(t, opts{})
-	resp, err := e.do(context.Background(), "GET", "/", fmt.Sprintf("nobody.localhost:%d", e.port), nil)
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s://127.0.0.1:%d/", e.scheme, e.port), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = fmt.Sprintf("nobody.localhost:%d", e.port)
+	req.Header.Set("Accept", "text/html")
+	resp, err := e.httpc.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +305,7 @@ func TestOfflineUnknown(t *testing.T) {
 	body := readAll(t, resp.Body)
 	if resp.StatusCode != 502 || !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") ||
 		!strings.Contains(body, "offline") || !strings.Contains(body, "nobody.localhost") ||
-		!strings.Contains(body, "Tunnel offline") {
+		!strings.Contains(body, "This tunnel is offline") {
 		t.Fatalf("unexpected: %d %v %s", resp.StatusCode, resp.Header, body)
 	}
 }

@@ -2,9 +2,7 @@ package server
 
 import (
 	"context"
-	_ "embed"
 	"errors"
-	"html/template"
 	"log/slog"
 	"net"
 	"net/http"
@@ -15,17 +13,6 @@ import (
 
 	"github.com/mohammed19n/passway/internal/protocol"
 )
-
-//go:embed offline.html
-var offlineHTML string
-
-var offlineTmpl = template.Must(template.New("offline").Parse(offlineHTML))
-
-func writeOffline(w http.ResponseWriter, host string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusBadGateway)
-	_ = offlineTmpl.Execute(w, struct{ Host string }{host})
-}
 
 // newTunnelProxy builds t's reverse proxy and transport. t.Name is read at
 // request time; Registry.Claim sets it before the tunnel becomes visible.
@@ -82,7 +69,7 @@ func newTunnelProxy(t *Tunnel, maxConns int, log *slog.Logger) {
 			if !errors.Is(err, context.Canceled) {
 				log.Warn("proxy error", "name", t.Name, "err", err)
 			}
-			writeOffline(w, r.Host)
+			renderPage(w, r, pageOffline, pageData{Host: r.Host})
 		},
 	}
 }
@@ -96,7 +83,7 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 	}
 	t, ok := s.registry.Lookup(label)
 	if !ok {
-		writeOffline(w, r.Host)
+		renderPage(w, r, pageOffline, pageData{Host: r.Host})
 		return
 	}
 	t.proxy.ServeHTTP(w, r)

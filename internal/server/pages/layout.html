@@ -1,0 +1,59 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{.Title}} - Passway</title>
+<style>
+:root{--bg:#f4f5fb;--card:#fff;--fg:#14152b;--muted:#5d607a;--line:#e3e5f1;--accent:#5b5bf0;--accent-fg:#fff;--accent-soft:#ececff;--code:#eef0fa;--shadow:0 1px 2px rgba(20,21,43,.06),0 12px 40px rgba(60,60,140,.10);--warn:#b45309;--warn-soft:#fff4e0}
+@media (prefers-color-scheme:dark){:root{--bg:#0d0e1a;--card:#161729;--fg:#ecedf8;--muted:#9a9db8;--line:#26283f;--accent:#8b8bff;--accent-fg:#0d0e1a;--accent-soft:#25264a;--code:#222440;--shadow:0 1px 2px rgba(0,0,0,.4),0 12px 40px rgba(0,0,0,.4);--warn:#fbbf24;--warn-soft:#33270f}}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px 16px;background:radial-gradient(1000px 500px at 50% -10%,var(--accent-soft),transparent 70%),var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased}
+main{width:100%;max-width:30rem;background:var(--card);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow);padding:40px 36px 28px;text-align:center}
+.brand{display:inline-flex;align-items:center;gap:8px;font-weight:650;font-size:15px;letter-spacing:.01em;color:var(--fg);margin-bottom:28px}
+.brand svg{display:block}
+.icon{width:64px;height:64px;margin:0 auto 20px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:flex;align-items:center;justify-content:center}
+.icon.warn{background:var(--warn-soft);color:var(--warn)}
+h1{margin:0 0 12px;font-size:1.65rem;line-height:1.25;letter-spacing:-.015em;font-weight:700;overflow-wrap:anywhere}
+p{margin:0 0 14px;color:var(--muted);overflow-wrap:anywhere}
+p strong{color:var(--fg);font-weight:600}
+code{font:.88em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code);padding:.15em .45em;border-radius:6px;color:var(--fg)}
+.btn{display:inline-block;margin:10px 0 6px;padding:12px 28px;border-radius:12px;background:var(--accent);color:var(--accent-fg);font-weight:600;text-decoration:none;box-shadow:0 4px 14px rgba(91,91,240,.35)}
+.btn:hover{filter:brightness(1.07)}
+.btn:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+.note{font-size:.85rem;margin-top:14px}
+footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--line);font-size:.8rem;color:var(--muted)}
+footer a{color:inherit;text-decoration:underline;text-underline-offset:2px}
+@media (max-width:480px){main{padding:32px 22px 22px;border-radius:16px}h1{font-size:1.4rem}}
+</style>
+</head>
+<body>
+<main>
+<div class="brand"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#5b5bf0"/><path d="M6 21h6c3 0 3-10 6-10h8" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="26" cy="11" r="2.4" fill="#fff"/></svg>Passway</div>
+{{end}}
+{{define "foot"}}
+<footer>Served by <a href="https://passway.run">Passway</a> &middot; passway.run</footer>
+</main>
+</body>
+</html>
+{{end}}
+{{define "offline"}}{{template "head" .}}
+<div class="icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a15 15 0 0 1 4-2.6M22 8.8a15 15 0 0 0-9-3.7M5 12.9a10 10 0 0 1 3.2-2.1M19 12.9a10 10 0 0 0-3-2.1M8.5 16.4a5 5 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor"/><path d="M3 3l18 18"/></svg></div>
+<h1>This tunnel is offline</h1>
+<p><strong>{{.Host}}</strong> isn't connected right now. If it's yours, start it with <code>passway http &lt;port&gt;</code>.</p>
+<p>The tunnel reconnects automatically as soon as it's back, so you can simply reload this page.</p>
+{{template "foot" .}}{{end}}
+{{define "ratelimited"}}{{template "head" .}}
+<div class="icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/></svg></div>
+<h1>Too many requests</h1>
+<p><strong>{{.Host}}</strong> is receiving more requests than its limit allows. Try again in {{.RetryIn}}s.</p>
+{{template "foot" .}}{{end}}
+{{define "warning"}}{{template "head" .}}
+<div class="icon warn"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg></div>
+<h1>You are about to visit {{.Host}}</h1>
+<p>This site is served through a Passway tunnel from someone's computer. Only continue if you know and trust who sent you this link. Never enter passwords or payment details unless you're sure.</p>
+<a class="btn" href="{{.Continue}}">Visit site</a>
+<p class="note">Developers: send the <code>Passway-Skip-Warning</code> header to skip this page.</p>
+{{template "foot" .}}{{end}}
