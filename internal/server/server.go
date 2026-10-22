@@ -20,8 +20,9 @@ type Config struct {
 	NameHold     time.Duration // 0 = 2 * time.Minute
 	Logger       *slog.Logger  // nil = slog.Default()
 
-	MaxConnsPerTunnel int // concurrent proxied connections per tunnel; 0 = 64
-	RateLimit         int // requests per minute per tunnel; 0 = unlimited
+	MaxConnsPerTunnel int  // concurrent proxied connections per tunnel; 0 = 64
+	RateLimit         int  // requests per minute per tunnel; 0 = unlimited
+	BrowserWarning    bool // show a one-time interstitial to browser navigations
 }
 
 // Server is the Passway tunnel server.

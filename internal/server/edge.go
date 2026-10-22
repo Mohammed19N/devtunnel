@@ -81,9 +81,21 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 		http.Error(w, "unknown host", http.StatusNotFound)
 		return
 	}
+	if r.URL.Path == continuePath {
+		if !s.cfg.BrowserWarning {
+			http.NotFound(w, r)
+			return
+		}
+		handleContinue(w, r)
+		return
+	}
 	t, ok := s.registry.Lookup(label)
 	if !ok {
 		renderPage(w, r, pageOffline, pageData{Host: r.Host})
+		return
+	}
+	if s.cfg.BrowserWarning && needsWarning(r) {
+		renderPage(w, r, pageWarning, pageData{Host: r.Host, Continue: continuePath + "?to=" + url.QueryEscape(r.URL.RequestURI())})
 		return
 	}
 	if s.limiter != nil {
