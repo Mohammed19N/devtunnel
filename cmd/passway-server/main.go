@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"flag"
@@ -19,13 +20,20 @@ import (
 	"time"
 
 	"github.com/mohammed19n/passway/internal/server"
+	"github.com/mohammed19n/passway/internal/server/dashboard"
+	"github.com/mohammed19n/passway/internal/server/store"
 )
 
 const idleTimeout = 120 * time.Second
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	err := run(ctx, os.Args[1:], os.Stderr, nil)
+	var err error
+	if len(os.Args) > 1 && os.Args[1] == "admin" {
+		err = runAdmin(ctx, os.Args[2:], os.Stdout)
+	} else {
+		err = run(ctx, os.Args[1:], os.Stderr, nil)
+	}
 	stop()
 	if err != nil && !errors.Is(err, flag.ErrHelp) {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -49,6 +57,28 @@ func exitCode(err error) int {
 	}
 }
 
+// cloudOpts holds the flags that only matter in cloud mode.
+type cloudOpts struct {
+	db, ghID, ghSecret, baseURL *string
+	minGitHubAge                *time.Duration
+	freeSignupCap               *int
+	freeBandwidthCap            *int64
+	devLogin                    *bool
+}
+
+func cloudFlags(fs *flag.FlagSet) cloudOpts {
+	return cloudOpts{
+		db:               fs.String("db", "", "SQLite database path (required in cloud mode; in --self-hosted mode it enables admin tokens)"),
+		ghID:             fs.String("github-client-id", "", "GitHub OAuth app client ID (cloud mode)"),
+		ghSecret:         fs.String("github-client-secret", "", "GitHub OAuth app client secret (cloud mode; default $PASSWAY_GITHUB_CLIENT_SECRET, the flag wins when set)"),
+		baseURL:          fs.String("base-url", "", "public dashboard URL (default <scheme>://<domain>[:port])"),
+		minGitHubAge:     fs.Duration("min-github-age", 168*time.Hour, "minimum GitHub account age to sign up (0 disables)"),
+		freeSignupCap:    fs.Int("free-signup-cap", 1000, "max Free accounts; further signups are waitlisted"),
+		freeBandwidthCap: fs.Int64("free-bandwidth-cap", 500<<30, "monthly bandwidth in bytes across all Free accounts"),
+		devLogin:         fs.Bool("dev-login", false, "enable the passwordless /auth/dev login (localhost domains only)"),
+	}
+}
+
 // run starts the server and blocks until ctx is cancelled or a listener fails.
 // ready, if non-nil, is called with the bound addresses: the plain HTTP address
 // first (if enabled), then the TLS address (if enabled).
@@ -66,6 +96,8 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	maxConns := fs.Int("max-conns-per-tunnel", 64, "max concurrent proxied connections per tunnel")
 	browserWarning := fs.Bool("browser-warning", false, "show a one-time warning page to browser visitors of tunnels")
 	rateLimit := fs.Int("rate-limit", 0, "max requests per minute per tunnel (0 = unlimited)")
+	selfHosted := fs.Bool("self-hosted", false, "run your own relay: no accounts or dashboard (default is cloud mode)")
+	cf := cloudFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return err
@@ -81,7 +113,22 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	if *rateLimit < 0 {
 		return usageError{fmt.Errorf("--rate-limit must be >= 0, got %d", *rateLimit)}
 	}
-	if strings.TrimSpace(*tokens) == "" && !*open && *domain != "localhost" && !strings.HasSuffix(*domain, ".localhost") {
+	secret := *cf.ghSecret
+	if secret == "" {
+		secret = os.Getenv("PASSWAY_GITHUB_CLIENT_SECRET")
+	}
+	cloud := !*selfHosted
+	if cloud {
+		if *tokens != "" {
+			return usageError{errors.New("--tokens only applies with --self-hosted")}
+		}
+		if *cf.db == "" || (!*cf.devLogin && (*cf.ghID == "" || secret == "")) {
+			return usageError{errors.New("cloud mode needs --db, --github-client-id and --github-client-secret (or run your own relay with --self-hosted)")}
+		}
+		if *cf.devLogin && *domain != "localhost" && !strings.HasSuffix(*domain, ".localhost") {
+			return usageError{errors.New("--dev-login is only allowed on a localhost domain")}
+		}
+	} else if strings.TrimSpace(*tokens) == "" && *cf.db == "" && !*open && *domain != "localhost" && !strings.HasSuffix(*domain, ".localhost") {
 		return fmt.Errorf("refusing to run an open relay on %s: set --tokens or pass --open", *domain)
 	}
 	useTLS := *tlsAddr != ""
@@ -130,8 +177,29 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	}
 	port := publicPort(scheme, portOf(pubLn.Addr()), *publicPortFlag)
 
+	log := slog.New(slog.NewTextHandler(stderr, nil))
+	var st *store.Store
+	var cookieSecret []byte
+	if *cf.db != "" {
+		var err error
+		if st, err = store.Open(*cf.db); err != nil {
+			closeListeners(plainLn, tlsLn)
+			return fmt.Errorf("open database: %w", err)
+		}
+		defer st.Close()
+		cookieSecret, err = st.Setting(context.Background(), "cookie_secret", func() []byte {
+			b := make([]byte, 32)
+			_, _ = rand.Read(b) // crypto/rand.Read never fails
+			return b
+		})
+		if err != nil {
+			closeListeners(plainLn, tlsLn)
+			return fmt.Errorf("cookie secret: %w", err)
+		}
+	}
+
 	var authenticator server.Authenticator
-	if *tokens != "" {
+	if !cloud && *tokens != "" {
 		var list []string
 		for _, t := range strings.Split(*tokens, ",") {
 			if t = strings.TrimSpace(t); t != "" {
@@ -140,8 +208,14 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		}
 		authenticator = server.StaticTokens(list)
 	}
-	log := slog.New(slog.NewTextHandler(stderr, nil))
-	srv := server.New(server.Config{
+	if !cloud && st != nil {
+		if authenticator == nil {
+			authenticator = store.AdminTokens{S: st}
+		} else {
+			authenticator = server.Chain{authenticator, store.AdminTokens{S: st}}
+		}
+	}
+	cfg := server.Config{
 		Domain:       *domain,
 		PublicScheme: scheme,
 		PublicPort:   port,
@@ -151,7 +225,48 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		MaxConnsPerTunnel: *maxConns,
 		RateLimit:         *rateLimit,
 		BrowserWarning:    *browserWarning,
-	})
+		CookieSecret:      cookieSecret,
+	}
+	var srv *server.Server // set below; the dashboard only reads it per request
+	if cloud {
+		base := *cf.baseURL
+		if base == "" {
+			base = scheme + "://" + *domain
+			if port != 0 {
+				base += ":" + strconv.Itoa(port)
+			}
+		}
+		dash, err := dashboard.New(dashboard.Config{
+			Store:              st,
+			BaseURL:            base,
+			GitHubClientID:     *cf.ghID,
+			GitHubClientSecret: secret,
+			MinGitHubAge:       *cf.minGitHubAge,
+			FreeSignupCap:      *cf.freeSignupCap,
+			DevLogin:           *cf.devLogin,
+			Logger:             log,
+			Tunnels: func(id string) []dashboard.TunnelInfo {
+				var out []dashboard.TunnelInfo
+				for _, t := range srv.TunnelsFor(id) {
+					out = append(out, dashboard.TunnelInfo{URL: t.URL, ClientVersion: t.ClientVersion, ConnectedAt: t.ConnectedAt, Requests: t.Requests})
+				}
+				return out
+			},
+		})
+		if err != nil {
+			closeListeners(plainLn, tlsLn)
+			return err
+		}
+		cfg.Directory = &store.Directory{S: st}
+		cfg.FreeBandwidthCap = *cf.freeBandwidthCap
+		cfg.Dashboard = dash
+	}
+	srv = server.New(cfg)
+	if cloud {
+		bgCtx, bgStop := context.WithCancel(ctx)
+		defer bgStop()
+		go srv.RunBackground(bgCtx)
+	}
 
 	var servers []*http.Server
 	errc := make(chan error, 2)
@@ -192,6 +307,14 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		}
 	}
 	return runErr
+}
+
+func closeListeners(lns ...net.Listener) {
+	for _, ln := range lns {
+		if ln != nil {
+			ln.Close()
+		}
+	}
 }
 
 // publicPort returns the port to show in public URLs: override if set, else

@@ -42,3 +42,18 @@ func (s StaticTokens) Authenticate(_ context.Context, token string) (Account, er
 	}
 	return Account{ID: "static", Plan: PlanUnlimited}, nil
 }
+
+// Chain tries each Authenticator in order and returns the first success. It
+// moves on only for ErrInvalidToken; any other error is returned at once.
+type Chain []Authenticator
+
+// Authenticate implements Authenticator.
+func (c Chain) Authenticate(ctx context.Context, token string) (Account, error) {
+	for _, a := range c {
+		acc, err := a.Authenticate(ctx, token)
+		if !errors.Is(err, ErrInvalidToken) {
+			return acc, err
+		}
+	}
+	return Account{}, ErrInvalidToken
+}

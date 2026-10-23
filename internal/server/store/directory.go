@@ -156,3 +156,21 @@ func (d *Directory) BannedLists(ctx context.Context) (users, hosts []string, err
 	}
 	return users, hosts, nil
 }
+
+// AdminTokens authenticates self-hosted admin tokens (user 0) only; a token
+// that belongs to a cloud user is rejected.
+type AdminTokens struct{ S *Store }
+
+var _ server.Authenticator = AdminTokens{}
+
+// Authenticate implements server.Authenticator.
+func (a AdminTokens) Authenticate(ctx context.Context, token string) (server.Account, error) {
+	t, err := a.S.TokenByPlain(ctx, token)
+	if errors.Is(err, ErrNotFound) || (err == nil && t.UserID != 0) {
+		return server.Account{}, server.ErrInvalidToken
+	}
+	if err != nil {
+		return server.Account{}, err
+	}
+	return server.Account{ID: "admin-token", Plan: server.PlanUnlimited}, nil
+}
