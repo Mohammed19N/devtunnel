@@ -11,7 +11,7 @@ const banPollEvery = 15 * time.Second
 // banSet is the cached ban lists; entries are lowercase.
 type banSet struct {
 	users, hosts map[string]bool
-	sticky       map[string]string // host label -> lowercase login whose ban closed it
+	sticky       map[string]string // host label -> user-ban key (login or id:<n>) whose ban closed it
 }
 
 func (b *banSet) banned(acc Account, label string) bool {
@@ -27,7 +27,23 @@ func (b *banSet) banned(acc Account, label string) bool {
 			return true
 		}
 	}
-	return acc.Login != "" && b.users[strings.ToLower(acc.Login)]
+	return b.userKey(acc) != ""
+}
+
+// userKey returns the user-ban entry that matches acc (its login, else
+// "id:<id>", so a GitHub rename doesn't lift a ban), or "".
+func (b *banSet) userKey(acc Account) string {
+	if acc.Login != "" {
+		if k := strings.ToLower(acc.Login); b.users[k] {
+			return k
+		}
+	}
+	if acc.ID != "" {
+		if k := "id:" + strings.ToLower(acc.ID); b.users[k] {
+			return k
+		}
+	}
+	return ""
 }
 
 // pollBans refreshes the cached ban set and closes the live sessions of
@@ -56,8 +72,8 @@ func (s *Server) pollBans(ctx context.Context) {
 	}
 	for _, t := range s.registry.All() {
 		if set.banned(t.Account, t.Name) && t.session != nil {
-			if login := strings.ToLower(t.Account.Login); set.users[login] {
-				set.sticky[strings.ToLower(t.Name)] = login
+			if k := set.userKey(t.Account); k != "" {
+				set.sticky[strings.ToLower(t.Name)] = k
 			}
 		}
 	}

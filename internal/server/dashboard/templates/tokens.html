@@ -11,7 +11,7 @@
 {{if .Tokens}}<div class="scroll"><table>
 <thead><tr><th>Name</th><th>Token</th><th>Created</th><th>Last used</th><th></th></tr></thead>
 <tbody>{{range .Tokens}}<tr><td>{{.Name}}</td><td><code>{{.Prefix}}…</code></td><td>{{.Created}}</td><td>{{.LastUsed}}</td>
-<td>{{if .Revoked}}<span class="tag">revoked</span>{{else}}<form method="post" action="/dashboard/tokens/revoke"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link">Revoke</button></form>{{end}}</td></tr>{{end}}</tbody>
+<td>{{if .Revoked}}<span class="tag">revoked</span>{{else}}<form method="post" action="/dashboard/tokens/revoke"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link" aria-label="Revoke token {{.Name}}">Revoke</button></form>{{end}}</td></tr>{{end}}</tbody>
 </table></div>{{else}}<p>You have no tokens yet.</p>{{end}}
 <form class="row" method="post" action="/dashboard/tokens">
 <input type="hidden" name="csrf" value="{{.CSRF}}">

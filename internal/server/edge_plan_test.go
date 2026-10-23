@@ -209,6 +209,22 @@ func TestBanPollerClosesTunnel(t *testing.T) {
 	}
 }
 
+func TestBanPollerMatchesUserID(t *testing.T) {
+	d := newUsageDir()
+	srv, _, _, sess := cloudEdge(t, d, okBackend())
+	d.umu.Lock()
+	d.banUser = []string{"ID:u1"} // a ban keyed on the account id survives a login rename
+	d.umu.Unlock()
+	srv.pollBans(context.Background())
+	deadline := time.Now().Add(3 * time.Second)
+	for !sess.IsClosed() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !sess.IsClosed() {
+		t.Fatal("session of user banned by id not closed")
+	}
+}
+
 func TestRunBackgroundStopsAndFlushes(t *testing.T) {
 	d := newUsageDir()
 	srv, _, _, _ := cloudEdge(t, d, okBackend())

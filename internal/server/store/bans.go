@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -49,5 +50,38 @@ func (s *Store) Bans(ctx context.Context) ([]Ban, error) {
 func (s *Store) IsBanned(ctx context.Context, kind, value string) (bool, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM bans WHERE kind = ? AND value = ?`, kind, strings.ToLower(value)).Scan(&n)
+	return n > 0, err
+}
+
+// userBanKey is the ban value that follows a user across GitHub renames.
+func userBanKey(id int64) string { return "id:" + strconv.FormatInt(id, 10) }
+
+// BanUser bans u by login and by id, so renaming on GitHub doesn't lift it.
+func (s *Store) BanUser(ctx context.Context, u User, reason string) error {
+	if err := s.AddBan(ctx, Ban{Kind: "user", Value: u.Login, Reason: reason}); err != nil {
+		return err
+	}
+	return s.AddBan(ctx, Ban{Kind: "user", Value: userBanKey(u.ID), Reason: reason})
+}
+
+// UnbanUser removes both bans written by BanUser. Pass the user as it was
+// banned and as it is now if the login may have changed.
+func (s *Store) UnbanUser(ctx context.Context, u User) error {
+	if err := s.RemoveBan(ctx, "user", u.Login); err != nil {
+		return err
+	}
+	return s.RemoveBan(ctx, "user", userBanKey(u.ID))
+}
+
+// IsUserBanned reports whether u's current login or id is banned.
+func (s *Store) IsUserBanned(ctx context.Context, u User) (bool, error) {
+	return s.IsUserBannedBy(ctx, u.Login, u.ID)
+}
+
+// IsUserBannedBy is IsUserBanned for a login and numeric id.
+func (s *Store) IsUserBannedBy(ctx context.Context, login string, id int64) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM bans WHERE kind = 'user' AND value IN (?, ?)`,
+		strings.ToLower(login), userBanKey(id)).Scan(&n)
 	return n > 0, err
 }

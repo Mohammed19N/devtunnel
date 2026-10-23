@@ -85,7 +85,7 @@ func (d *Dashboard) currentSession(w http.ResponseWriter, r *http.Request) (*ses
 		return nil, err
 	}
 	// The bans table is the source of truth, not users.banned_at.
-	banned, err := d.cfg.Store.IsBanned(ctx, "user", u.Login)
+	banned, err := d.cfg.Store.IsUserBanned(ctx, u)
 	if err != nil {
 		return nil, err
 	}

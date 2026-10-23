@@ -47,7 +47,7 @@ func (d *Directory) Authenticate(ctx context.Context, token string) (server.Acco
 	if err != nil {
 		return server.Account{}, err
 	}
-	banned, err := d.S.IsBanned(ctx, "user", u.Login)
+	banned, err := d.S.IsUserBanned(ctx, u)
 	if err != nil {
 		return server.Account{}, err
 	}
@@ -102,7 +102,11 @@ func (d *Directory) Owns(ctx context.Context, acc server.Account, name string) (
 
 // Banned reports whether acc's login or the host label is banned.
 func (d *Directory) Banned(ctx context.Context, acc server.Account, label string) (bool, error) {
-	if acc.Login != "" {
+	if id, ok := userID(acc); ok {
+		if b, err := d.S.IsUserBannedBy(ctx, acc.Login, id); err != nil || b {
+			return b, err
+		}
+	} else if acc.Login != "" {
 		if b, err := d.S.IsBanned(ctx, "user", acc.Login); err != nil || b {
 			return b, err
 		}
@@ -136,7 +140,7 @@ func (d *Directory) PlanUsage(ctx context.Context, plan string) (int64, error) {
 	return d.S.PlanUsage(ctx, plan, d.month())
 }
 
-// BannedLists returns banned user logins and host labels.
+// BannedLists returns banned user logins (and "id:<n>" keys) and host labels.
 func (d *Directory) BannedLists(ctx context.Context) (users, hosts []string, err error) {
 	bans, err := d.S.Bans(ctx)
 	if err != nil {

@@ -59,6 +59,7 @@ type Dashboard struct {
 	stateCookie   string
 	client        *http.Client
 	mux           *http.ServeMux
+	postRoutes    []string // paths of every POST route, for tests
 }
 
 //go:embed templates/*.html
@@ -149,14 +150,14 @@ func (d *Dashboard) routes() {
 	if d.cfg.DevLogin {
 		m.HandleFunc("GET /auth/dev", d.handleDevLogin)
 	}
-	m.HandleFunc("POST /logout", d.post(d.handleLogout))
+	d.handlePost("/logout", d.handleLogout)
 	m.HandleFunc("GET /dashboard", d.page(d.handleDashboard))
 	m.HandleFunc("GET /dashboard/subdomains", d.page(d.active(d.handleSubdomains)))
-	m.HandleFunc("POST /dashboard/subdomains", d.post(d.active(d.handleClaim)))
-	m.HandleFunc("POST /dashboard/subdomains/release", d.post(d.active(d.handleRelease)))
+	d.handlePost("/dashboard/subdomains", d.active(d.handleClaim))
+	d.handlePost("/dashboard/subdomains/release", d.active(d.handleRelease))
 	m.HandleFunc("GET /dashboard/tokens", d.page(d.active(d.handleTokens)))
-	m.HandleFunc("POST /dashboard/tokens", d.post(d.active(d.handleCreateToken)))
-	m.HandleFunc("POST /dashboard/tokens/revoke", d.post(d.active(d.handleRevokeToken)))
+	d.handlePost("/dashboard/tokens", d.active(d.handleCreateToken))
+	d.handlePost("/dashboard/tokens/revoke", d.active(d.handleRevokeToken))
 	m.HandleFunc("GET /waitlist", d.page(d.handleWaitlist))
 	m.HandleFunc("GET /static/app.css", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
@@ -165,6 +166,13 @@ func (d *Dashboard) routes() {
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		d.fail(w, http.StatusNotFound, "There's nothing here.")
 	})
+}
+
+// handlePost registers a POST route behind the session, origin and CSRF
+// checks and records its path in postRoutes. Every POST goes through here.
+func (d *Dashboard) handlePost(path string, h func(http.ResponseWriter, *http.Request, *session)) {
+	d.postRoutes = append(d.postRoutes, path)
+	d.mux.HandleFunc("POST "+path, d.post(h))
 }
 
 // ServeHTTP sets the security headers and dispatches to the routes.

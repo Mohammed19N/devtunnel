@@ -183,3 +183,44 @@ func TestDirectoryDeletedUserIsInvalidToken(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestBanUserSurvivesRename(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t)
+	d := &Directory{S: s}
+	u := mkUser(t, s, 1, "alice")
+	plain, _, err := s.CreateToken(ctx, u.ID, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BanUser(ctx, u, "abuse"); err != nil {
+		t.Fatal(err)
+	}
+	renamed, _, err := s.UpsertGitHubUser(ctx, User{GitHubID: 1, Login: "alice2"})
+	if err != nil || renamed.ID != u.ID || renamed.Login != "alice2" {
+		t.Fatalf("rename: %+v %v", renamed, err)
+	}
+	var pe *protocol.Error
+	if _, err := d.Authenticate(ctx, plain); !errors.As(err, &pe) || pe.Code != protocol.CodeBanned {
+		t.Fatalf("renamed banned user authenticated: %v", err)
+	}
+	if b, err := d.Banned(ctx, server.Account{ID: "1", Login: "alice2"}, ""); err != nil || !b {
+		t.Fatalf("Banned after rename = %v, %v", b, err)
+	}
+	if b, err := s.IsUserBanned(ctx, renamed); err != nil || !b {
+		t.Fatalf("IsUserBanned = %v, %v", b, err)
+	}
+	users, _, _ := d.BannedLists(ctx)
+	if !reflect.DeepEqual(users, []string{"alice", "id:1"}) {
+		t.Errorf("BannedLists users = %v", users)
+	}
+	if err := s.UnbanUser(ctx, renamed); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UnbanUser(ctx, User{ID: 1, Login: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Authenticate(ctx, plain); err != nil {
+		t.Fatalf("after unban: %v", err)
+	}
+}

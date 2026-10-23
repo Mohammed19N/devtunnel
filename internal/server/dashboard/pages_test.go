@@ -165,9 +165,6 @@ func TestReleaseSubdomain(t *testing.T) {
 	if w := e.post("/dashboard/subdomains/release", url.Values{"name": {subs[0].Name}}, sc, csrf); w.Code != http.StatusBadRequest {
 		t.Errorf("release default = %d, want 400", w.Code)
 	}
-	if w := e.post("/dashboard/subdomains/release", url.Values{"name": {"nobody-owns"}}, sc, csrf); w.Code != http.StatusNotFound {
-		t.Errorf("release unowned = %d, want 404", w.Code)
-	}
 }
 
 func TestCreateTokenShownOnce(t *testing.T) {
@@ -176,6 +173,9 @@ func TestCreateTokenShownOnce(t *testing.T) {
 	w := e.post("/dashboard/tokens", url.Values{"name": {"laptop"}}, sc, csrf)
 	if w.Code != 200 {
 		t.Fatalf("create = %d %s", w.Code, w.Body)
+	}
+	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("token response Cache-Control = %q, want no-store", cc)
 	}
 	m := regexp.MustCompile(`<code>(pw_[A-Za-z0-9_-]+)</code>`).FindStringSubmatch(w.Body.String())
 	if m == nil {
@@ -257,13 +257,100 @@ func TestWaitlistedCannotCreateToken(t *testing.T) {
 func TestAllPostsRequireCSRF(t *testing.T) {
 	e := newTestEnv(t, nil)
 	sc, csrf := e.signedIn(t)
-	for _, p := range []string{"/logout", "/dashboard/subdomains", "/dashboard/subdomains/release", "/dashboard/tokens", "/dashboard/tokens/revoke"} {
-		if w := e.post(p, url.Values{"name": {"acme"}, "id": {"1"}}, sc, ""); w.Code != http.StatusForbidden {
+	if len(e.d.postRoutes) < 5 {
+		t.Fatalf("postRoutes = %v, want at least 5", e.d.postRoutes)
+	}
+	for _, p := range e.d.postRoutes {
+		// No other fields, so a 403 can only come from the CSRF check.
+		if w := e.post(p, nil, sc, ""); w.Code != http.StatusForbidden {
 			t.Errorf("POST %s without csrf = %d, want 403", p, w.Code)
 		}
-		if w := e.post(p, url.Values{"name": {"acme"}, "id": {"1"}}, sc, csrf+"x"); w.Code != http.StatusForbidden {
+		if w := e.post(p, nil, sc, csrf+"x"); w.Code != http.StatusForbidden {
 			t.Errorf("POST %s with wrong csrf = %d, want 403", p, w.Code)
 		}
+	}
+}
+
+func TestReleaseOtherUsersSubdomainFails(t *testing.T) {
+	e := newTestEnv(t, nil)
+	sc, csrf := e.signedIn(t)
+	ctx := context.Background()
+	e.st.SetPlan(ctx, mustUser(t, e, "alice").ID, "pro")
+	e.post("/dashboard/subdomains", url.Values{"name": {"acme"}}, sc, csrf)
+	sc2, csrf2 := e.signedInAs(t, 43, "bob")
+	if w := e.post("/dashboard/subdomains/release", url.Values{"name": {"acme"}}, sc2, csrf2); w.Code != http.StatusNotFound {
+		t.Errorf("bob releasing alice's acme = %d, want 404", w.Code)
+	}
+	if owner, err := e.st.SubdomainOwner(ctx, "acme"); err != nil || owner != mustUser(t, e, "alice").ID {
+		t.Errorf("owner = %d, %v", owner, err)
+	}
+}
+
+func TestBannedUserCannotCreateToken(t *testing.T) {
+	e := newTestEnv(t, nil)
+	sc, csrf := e.signedIn(t)
+	if err := e.st.AddBan(context.Background(), store.Ban{Kind: "user", Value: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if w := e.post("/dashboard/tokens", url.Values{"name": {"x"}}, sc, csrf); w.Code != http.StatusForbidden {
+		t.Errorf("banned create token = %d, want 403", w.Code)
+	}
+	if toks, _ := e.st.ListTokens(context.Background(), mustUser(t, e, "alice").ID); len(toks) != 0 {
+		t.Errorf("tokens created: %v", toks)
+	}
+}
+
+func TestBanSurvivesGitHubRename(t *testing.T) {
+	e := newTestEnv(t, nil)
+	sc, _ := e.signedIn(t)
+	u := mustUser(t, e, "alice")
+	if err := e.st.BanUser(context.Background(), u, "abuse"); err != nil {
+		t.Fatal(err)
+	}
+	// Same GitHub id, new login.
+	e.gh.addUser(42, "alice-renamed", 400*24*time.Hour)
+	w := e.signIn(t, "alice-renamed")
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "account suspended") {
+		t.Fatalf("renamed banned sign-in = %d %s", w.Code, w.Body)
+	}
+	assertNoSession(t, w)
+	// The pre-rename session is dead too, now that the row carries the new login.
+	if dw := e.do("GET", "/dashboard", nil, sc); dw.Code != http.StatusSeeOther || dw.Header().Get("Location") != "/" {
+		t.Errorf("old session after rename = %d %q", dw.Code, dw.Header().Get("Location"))
+	}
+}
+
+func TestDoubleRevokeAndReleaseRedirect(t *testing.T) {
+	e := newTestEnv(t, nil)
+	sc, csrf := e.signedIn(t)
+	ctx := context.Background()
+	u := mustUser(t, e, "alice")
+	e.st.SetPlan(ctx, u.ID, "pro")
+	e.post("/dashboard/subdomains", url.Values{"name": {"acme"}}, sc, csrf)
+	e.post("/dashboard/tokens", url.Values{"name": {"laptop"}}, sc, csrf)
+	toks, _ := e.st.ListTokens(ctx, u.ID)
+	id := strconv.FormatInt(toks[0].ID, 10)
+	for i := 0; i < 2; i++ {
+		if w := e.post("/dashboard/tokens/revoke", url.Values{"id": {id}}, sc, csrf); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/dashboard/tokens" {
+			t.Errorf("revoke #%d = %d %q", i+1, w.Code, w.Header().Get("Location"))
+		}
+		if w := e.post("/dashboard/subdomains/release", url.Values{"name": {"acme"}}, sc, csrf); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/dashboard/subdomains" {
+			t.Errorf("release #%d = %d %q", i+1, w.Code, w.Header().Get("Location"))
+		}
+	}
+}
+
+func TestRowButtonsHaveLabels(t *testing.T) {
+	e := newTestEnv(t, nil)
+	sc, csrf := e.signedIn(t)
+	e.st.SetPlan(context.Background(), mustUser(t, e, "alice").ID, "pro")
+	e.post("/dashboard/subdomains", url.Values{"name": {"acme"}}, sc, csrf)
+	e.post("/dashboard/tokens", url.Values{"name": {"laptop"}}, sc, csrf)
+	if b := e.do("GET", "/dashboard/subdomains", nil, sc).Body.String(); !strings.Contains(b, `aria-label="Release acme"`) {
+		t.Errorf("release button unlabelled: %s", b)
+	}
+	if b := e.do("GET", "/dashboard/tokens", nil, sc).Body.String(); !strings.Contains(b, `aria-label="Revoke token laptop"`) {
+		t.Errorf("revoke button unlabelled: %s", b)
 	}
 }
 

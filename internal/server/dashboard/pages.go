@@ -206,6 +206,12 @@ func (d *Dashboard) handleRelease(w http.ResponseWriter, r *http.Request, s *ses
 		d.fail(w, http.StatusBadRequest, "Your default subdomain can't be released.")
 		return
 	case errors.Is(err, store.ErrNotFound):
+		// Nobody holds it any more: a double click on Release, not someone
+		// else's name.
+		if _, oerr := d.cfg.Store.SubdomainOwner(r.Context(), name); errors.Is(oerr, store.ErrNotFound) {
+			http.Redirect(w, r, "/dashboard/subdomains", http.StatusSeeOther)
+			return
+		}
 		d.fail(w, http.StatusNotFound, "You don't have that subdomain.")
 		return
 	case err != nil:
@@ -255,9 +261,9 @@ func (d *Dashboard) handleCreateToken(w http.ResponseWriter, r *http.Request, s 
 		d.internalError(w, "create token", err)
 		return
 	}
+	// The plaintext exists only now: don't lose it over a failed audit write.
 	if err := d.cfg.Store.Audit(r.Context(), s.User.ID, "token.create", fmt.Sprintf("id=%d name=%q", tok.ID, name)); err != nil {
-		d.internalError(w, "audit", err)
-		return
+		d.log.Error("dashboard: audit token.create", "err", err)
 	}
 	d.renderTokens(w, r, s, http.StatusOK, "", name, plain)
 }
@@ -270,6 +276,15 @@ func (d *Dashboard) handleRevokeToken(w http.ResponseWriter, r *http.Request, s 
 	}
 	switch err := d.cfg.Store.RevokeToken(r.Context(), s.User.ID, id); {
 	case errors.Is(err, store.ErrNotFound):
+		// Already revoked (a double click) is fine; someone else's is not.
+		if toks, lerr := d.cfg.Store.ListTokens(r.Context(), s.User.ID); lerr == nil {
+			for _, t := range toks {
+				if t.ID == id {
+					http.Redirect(w, r, "/dashboard/tokens", http.StatusSeeOther)
+					return
+				}
+			}
+		}
 		d.fail(w, http.StatusNotFound, "You don't have that token.")
 		return
 	case err != nil:
