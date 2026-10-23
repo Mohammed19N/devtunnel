@@ -34,6 +34,7 @@ func replayInfoFrom(ctx context.Context) *replayInfo {
 type capBuffer struct {
 	data []byte
 	size int64
+	cut  bool // body continued past what was seen
 }
 
 func (c *capBuffer) add(p []byte) {
@@ -47,7 +48,7 @@ func (c *capBuffer) add(p []byte) {
 }
 
 func (c *capBuffer) body() Body {
-	return Body{Data: c.data, Size: c.size, Truncated: c.size > int64(len(c.data))}
+	return Body{Data: c.data, Size: c.size, Truncated: c.cut || c.size > int64(len(c.data))}
 }
 
 type capReader struct {
@@ -118,44 +119,58 @@ func (w *capWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return c, rw, err
 }
 
+// maxDrain bounds how much unread request body Capture pulls after next returns.
+const maxDrain = 8 << 20
+
 // Capture records every request served by next into s. The request body is teed (capped
 // at MaxBody for the record, unbounded for next). The response writer wrapper captures
 // status, header snapshot at WriteHeader, and up to MaxBody of body. It implements Unwrap
 // so Flush/Hijack reach the real writer. A hijack sets Upgraded=true and Status 101. The
 // exchange is added when next returns. The context value set by WithReplayOf is copied
-// into ReplayOf.
+// into ReplayOf. Request metadata is snapshotted before next runs, and any request body
+// next left unread is drained (up to maxDrain bytes) so the record is complete.
 func Capture(s *Store, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		req := Request{
+			Method: r.Method,
+			URI:    r.URL.RequestURI(),
+			Host:   r.Host,
+			Proto:  r.Proto,
+			Header: r.Header.Clone(),
+		}
+		ri := replayInfoFrom(r.Context())
 		var reqBuf capBuffer
-		if r.Body != nil {
-			r.Body = &capReader{rc: r.Body, buf: &reqBuf}
+		var reader *capReader
+		if r.Body != nil && r.Body != http.NoBody {
+			reader = &capReader{rc: r.Body, buf: &reqBuf}
+			r.Body = reader
 		}
 		cw := &capWriter{ResponseWriter: w}
-		defer func() {
+
+		record := func(panicked bool) {
+			if reader != nil && !panicked && !cw.upgraded {
+				drainBody(reader, &reqBuf)
+			}
 			status := cw.status
 			if status == 0 {
 				status = http.StatusOK
+				if panicked {
+					status = http.StatusInternalServerError
+				}
 			}
 			hdr := cw.header
 			if hdr == nil {
 				hdr = w.Header().Clone()
 			}
+			req.Body = reqBuf.body()
 			e := &Exchange{
 				Start:    start,
 				Duration: time.Since(start),
-				Request: Request{
-					Method: r.Method,
-					URI:    r.URL.RequestURI(),
-					Host:   r.Host,
-					Proto:  r.Proto,
-					Header: r.Header.Clone(),
-					Body:   reqBuf.body(),
-				},
+				Request:  req,
 				Response: Response{Status: status, Header: hdr, Body: cw.body.body()},
 				Upgraded: cw.upgraded,
 			}
-			ri := replayInfoFrom(r.Context())
 			if ri != nil {
 				e.ReplayOf = ri.of
 			}
@@ -163,7 +178,29 @@ func Capture(s *Store, next http.Handler) http.Handler {
 			if ri != nil {
 				ri.newID = id
 			}
+		}
+
+		defer func() {
+			if v := recover(); v != nil {
+				record(true)
+				panic(v)
+			}
+			record(false)
 		}()
 		next.ServeHTTP(cw, r)
 	})
+}
+
+// drainBody reads what next left of the request body into buf, up to maxDrain total
+// bytes seen. If body remains past that, the record is marked truncated.
+func drainBody(r *capReader, buf *capBuffer) {
+	if room := maxDrain - buf.size; room > 0 {
+		if _, err := io.CopyN(io.Discard, r, room); err != nil {
+			return // EOF (complete) or read error
+		}
+	}
+	var one [1]byte
+	if n, _ := r.Read(one[:]); n > 0 {
+		buf.cut = true
+	}
 }

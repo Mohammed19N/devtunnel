@@ -136,3 +136,58 @@ func TestCaptureFillsReplayNewID(t *testing.T) {
 		t.Fatal("expected nil")
 	}
 }
+
+func TestCaptureSnapshotsRequestBeforeHandler(t *testing.T) {
+	s := NewStore(0)
+	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Del("X-Orig")
+		r.URL.Path = "/rewritten"
+		r.URL.RawQuery = ""
+		r.Host = "other"
+	}))
+	req := httptest.NewRequest("GET", "/orig?q=1", nil)
+	req.Header.Set("X-Orig", "keep")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	e, _ := s.Get(1)
+	if e.Request.URI != "/orig?q=1" || e.Request.Header.Get("X-Orig") != "keep" || e.Request.Host == "other" {
+		t.Fatalf("request = %+v", e.Request)
+	}
+}
+
+func TestCaptureDrainsUnreadBody(t *testing.T) {
+	s := NewStore(0)
+	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/", strings.NewReader("0123456789")))
+	e, _ := s.Get(1)
+	if string(e.Request.Body.Data) != "0123456789" || e.Request.Body.Size != 10 || e.Request.Body.Truncated {
+		t.Fatalf("body = %+v", e.Request.Body)
+	}
+}
+
+func TestCaptureDrainCapMarksTruncated(t *testing.T) {
+	s := NewStore(0)
+	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/", bytes.NewReader(make([]byte, maxDrain+100))))
+	e, _ := s.Get(1)
+	b := e.Request.Body
+	if !b.Truncated || len(b.Data) != MaxBody || b.Size < maxDrain || b.Size > maxDrain+1 {
+		t.Fatalf("len=%d size=%d trunc=%v", len(b.Data), b.Size, b.Truncated)
+	}
+}
+
+func TestCapturePanicRecords500AndRepanics(t *testing.T) {
+	s := NewStore(0)
+	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { panic("boom") }))
+	func() {
+		defer func() {
+			if v := recover(); v != "boom" {
+				t.Fatalf("recovered %v", v)
+			}
+		}()
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
+	}()
+	e, ok := s.Get(1)
+	if !ok || e.Response.Status != 500 {
+		t.Fatalf("exchange = %+v", e)
+	}
+}
