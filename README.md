@@ -92,40 +92,85 @@ connections cannot be replayed. The inspector listens on loopback only.
 | `--inspect` | `true` | Run the inspector. Use `--inspect=false` to turn it off. |
 | `--inspect-addr` | `127.0.0.1:4040` | Inspector listen address. Must be a loopback address. |
 
-## Running a server
+## Passway Cloud
+
+Passway Cloud is the hosted version: sign in with GitHub, get a token, and
+every account gets a stable default subdomain.
+
+1. Sign in at the dashboard with GitHub.
+2. Create a CLI token under **CLI tokens**. It is shown once.
+3. `passway login <token>`
+4. `passway http 3000 --server https://<cloud-domain>` prints your public URL.
+   Reserved subdomains from the dashboard work with `--name <subdomain>`.
+
+| | Free | Pro |
+|---|---|---|
+| Concurrent tunnels | 1 | 5 |
+| Reserved subdomains | 1 | 5 |
+| Bandwidth per month | 1 GiB | 50 GiB |
+| Requests per minute per tunnel | 60 | 600 |
+| Browser warning page | yes, names the owner | no |
+
+These numbers are placeholders until the final plans are set (Pro billing
+arrives in a later milestone; for now an operator sets plans with
+`passway-server admin set-plan`). A suspended account's tunnels are closed and
+its tunnel hosts show a 403 page.
+
+### Running Passway Cloud
+
+`passway-server` runs in cloud mode by default: accounts, a dashboard on the
+base domain and plan limits, all backed by SQLite.
 
 ```sh
-passway-server --domain tunnels.example.com \
+export PASSWAY_GITHUB_CLIENT_SECRET=...
+passway-server --domain passway.example --db /var/lib/passway/p.db \
+  --github-client-id <id> --tls-addr :443 --tls-cert cert.pem --tls-key key.pem
+```
+
+For local development, `--dev-login` adds a passwordless `/auth/dev?login=<name>`
+sign-in. It only works on `localhost` domains:
+
+```sh
+passway-server --domain localhost --addr :8080 --db ./p.db --dev-login
+```
+
+Owner to-dos before a public launch:
+
+- Create a GitHub OAuth app whose callback URL is
+  `<base-url>/auth/github/callback`, and pass its client ID with
+  `--github-client-id` and its secret in `PASSWAY_GITHUB_CLIENT_SECRET`.
+- Put the base domain on the [Public Suffix List](https://publicsuffix.org/).
+  Tunnels are subdomains of the dashboard's domain, so without this browsers
+  share cookies between them.
+
+| Flag (cloud) | Default | Meaning |
+|---|---|---|
+| `--db` | (required) | SQLite database path. |
+| `--github-client-id`, `--github-client-secret` | (empty) | GitHub OAuth app. The secret may come from `$PASSWAY_GITHUB_CLIENT_SECRET`. |
+| `--base-url` | `<scheme>://<domain>[:port]` | Public dashboard URL. |
+| `--min-github-age` | `168h` | Minimum GitHub account age to sign up (`0` disables). |
+| `--free-signup-cap` | `1000` | Free accounts allowed; later signups are waitlisted. |
+| `--free-bandwidth-cap` | `500 GiB` | Monthly bandwidth across all Free accounts, in bytes. |
+| `--dev-login` | `false` | Passwordless dev sign-in (localhost only). |
+
+## Running your own relay
+
+Pass `--self-hosted` for a relay with no accounts or dashboard: random tunnel
+names and shared `--tokens`.
+
+```sh
+passway-server --self-hosted --domain tunnels.example.com \
   --tls-addr :443 --tls-cert cert.pem --tls-key key.pem \
   --addr :80 --tokens secret1,secret2
 ```
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--domain` | (required) | Base domain. Tunnels live at `<name>.<domain>`. |
-| `--addr` | `:8080` | Plain HTTP listener. With TLS enabled it redirects to HTTPS. Empty disables it. |
-| `--tls-addr` | (empty) | TLS listener, e.g. `:443`. |
-| `--tls-cert`, `--tls-key` | (empty) | Certificate and key files. Required with `--tls-addr`. |
-| `--tokens` | (empty) | Comma-separated accepted client tokens. Required unless the domain is `localhost` (or `*.localhost`) or `--open` is given. |
-| `--open` | `false` | Allow running with no `--tokens` on a non-localhost domain. That makes an open relay anyone can use; the server refuses to start otherwise. |
-| `--public-port` | `0` | Port shown in public URLs, if it differs from the listener (for example behind a proxy). |
-| `--rate-limit` | `0` | Maximum requests per minute for each tunnel. Over the limit, visitors get `429` with a `Retry-After` header. `0` means unlimited. |
-| `--max-conns-per-tunnel` | `64` | Maximum concurrent proxied connections per tunnel. |
-| `--browser-warning` | `false` | Show a one-time warning page to browser page loads (requests with `Sec-Fetch-Mode: navigate` or `Sec-Fetch-Dest: document`, or, without those headers, GET or HEAD requests that accept `text/html`) before they reach a tunnel. Webhook calls and other API traffic are not interrupted. Clients can skip it with a `Passway-Skip-Warning` header. Visitors who continue get a cookie signed by the server for that tunnel host, valid for 7 days or until the server restarts. |
-
-The server refuses requested subdomain names (`--name`) that contain blocked
-words, such as brand names and terms commonly used in phishing (`paypal`,
-`login`, `bank` and similar). Webhook senders are not blocked, so names like
-`stripe-hooks` or `github-webhooks` work.
-
-You need a wildcard DNS record (`*.tunnels.example.com`) and a wildcard
-certificate for the domain. Clients authenticate with `passway login <token>`
-or the `PASSWAY_TOKEN` environment variable, and pick the server with
-`--server`.
+Clients authenticate with `passway login <token>` or `PASSWAY_TOKEN`, and pick
+the server with `--server`. The full flag reference, DNS and TLS notes and the
+admin commands are in [docs/self-hosting.md](docs/self-hosting.md).
 
 ## Roadmap
 
-Planned, not built yet: accounts and plans, and a hosted cloud offering.
+Accounts, plans and the dashboard work (milestone 3). Planned, not built yet: paid plans with billing, custom domains and an install script.
 
 ## License
 

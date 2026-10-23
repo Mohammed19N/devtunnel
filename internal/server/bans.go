@@ -99,3 +99,11 @@ func (s *Server) runBanPoller(ctx context.Context) {
 		}
 	}
 }
+
+// PollBansNow refreshes the ban cache and closes banned live tunnels right
+// away instead of waiting for the next poll. For tests and admin tooling.
+func (s *Server) PollBansNow(ctx context.Context) {
+	if s.cfg.Directory != nil {
+		s.pollBans(ctx)
+	}
+}

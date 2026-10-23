@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -24,6 +27,8 @@ import (
 	"github.com/mohammed19n/passway/internal/inspector"
 	"github.com/mohammed19n/passway/internal/protocol"
 	"github.com/mohammed19n/passway/internal/server"
+	"github.com/mohammed19n/passway/internal/server/dashboard"
+	"github.com/mohammed19n/passway/internal/server/store"
 )
 
 type opts struct {
@@ -35,6 +40,7 @@ type opts struct {
 	inspector      bool // wrap the client's handler with an inspector
 	rateLimit      int  // server requests/minute per tunnel; 0 = off
 	browserWarning bool // server shows the interstitial to browser GETs
+	cloud          bool // cloud mode: store, dashboard and account directory; no auto-started tunnel
 }
 
 type env struct {
@@ -44,6 +50,8 @@ type env struct {
 	httpc      *http.Client
 	scheme     string
 	insp       *inspector.Inspector // nil unless opts.inspector
+	store      *store.Store         // cloud only
+	base       string               // cloud only: the base-domain URL, http://localhost:<port>
 }
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -69,8 +77,32 @@ func setupEnv(t *testing.T, o opts) (*env, *server.Server) {
 	if o.tls {
 		scheme = "https"
 	}
-	srv := server.New(server.Config{Domain: "localhost", PublicScheme: scheme, PublicPort: port, Logger: discard,
-		RateLimit: o.rateLimit, BrowserWarning: o.browserWarning})
+	cfg := server.Config{Domain: "localhost", PublicScheme: scheme, PublicPort: port, Logger: discard,
+		RateLimit: o.rateLimit, BrowserWarning: o.browserWarning}
+	var st *store.Store
+	var srv *server.Server // assigned below; the dashboard only reads it per request
+	baseURL := fmt.Sprintf("%s://localhost:%d", scheme, port)
+	if o.cloud {
+		var err error
+		if st, err = store.Open(filepath.Join(t.TempDir(), "p.db")); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { st.Close() })
+		dash, err := dashboard.New(dashboard.Config{Store: st, BaseURL: baseURL, DevLogin: true, Logger: discard,
+			Tunnels: func(id string) []dashboard.TunnelInfo {
+				var out []dashboard.TunnelInfo
+				for _, tn := range srv.TunnelsFor(id) {
+					out = append(out, dashboard.TunnelInfo{URL: tn.URL, ClientVersion: tn.ClientVersion, ConnectedAt: tn.ConnectedAt, Requests: tn.Requests})
+				}
+				return out
+			}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Directory = &store.Directory{S: st}
+		cfg.Dashboard = dash
+	}
+	srv = server.New(cfg)
 	ts.Config.Handler = srv
 	if o.tls {
 		ts.StartTLS()
@@ -95,6 +127,14 @@ func setupEnv(t *testing.T, o opts) (*env, *server.Server) {
 	if o.inspector {
 		insp = inspector.New(inspector.DefaultCapacity, client.NewProxy(target, o.rewriteHost, discard))
 		handler = insp.Handler()
+	}
+
+	if o.cloud { // tests start their own clients with account tokens
+		e := &env{port: port, scheme: scheme, local: local, store: st, base: baseURL}
+		e.httpc = &http.Client{Timeout: 30 * time.Second, Transport: e.pin(http.DefaultTransport, false),
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		t.Cleanup(e.httpc.CloseIdleConnections)
+		return e, srv
 	}
 
 	ready := make(chan protocol.Ready, 4)
@@ -657,4 +697,226 @@ func newBrowserGET(t *testing.T, u string) *http.Request {
 	}
 	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 	return req
+}
+
+// --- cloud flow ---
+
+// browserSession is a cookie-jar client signed in to the dashboard.
+type browserSession struct {
+	t    *testing.T
+	e    *env
+	http *http.Client
+}
+
+func (e *env) devLogin(t *testing.T, login string) *browserSession {
+	t.Helper()
+	jar, _ := cookiejar.New(nil)
+	b := &browserSession{t: t, e: e, http: &http.Client{
+		Jar: jar, Timeout: 10 * time.Second, Transport: e.pin(http.DefaultTransport, false),
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}}
+	resp, err := b.http.Get(e.base + "/auth/dev?login=" + login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("dev login: %d", resp.StatusCode)
+	}
+	return b
+}
+
+var (
+	csrfRe  = regexp.MustCompile(`name="csrf" value="([^"]+)"`)
+	tokenRe = regexp.MustCompile(`pw_[A-Za-z0-9_-]+`)
+)
+
+func (b *browserSession) get(path string) (int, string) {
+	b.t.Helper()
+	resp, err := b.http.Get(b.e.base + path)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, readAll(b.t, resp.Body)
+}
+
+// post fetches the page at path for its CSRF token, then posts the form to it.
+func (b *browserSession) post(path string, form url.Values) (int, string) {
+	b.t.Helper()
+	_, page := b.get(path)
+	m := csrfRe.FindStringSubmatch(page)
+	if m == nil {
+		b.t.Fatalf("no csrf token on %s: %s", path, page)
+	}
+	form.Set("csrf", m[1])
+	req, _ := http.NewRequest("POST", b.e.base+path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", b.e.base)
+	resp, err := b.http.Do(req)
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode, readAll(b.t, resp.Body)
+}
+
+func (b *browserSession) newToken(name string) string {
+	b.t.Helper()
+	code, body := b.post("/dashboard/tokens", url.Values{"name": {name}})
+	tok := tokenRe.FindString(body)
+	if code != 200 || tok == "" {
+		b.t.Fatalf("create token: %d %s", code, body)
+	}
+	return tok
+}
+
+// startClient runs a tunnel client for token and returns its Ready and result.
+func (e *env) startClient(t *testing.T, token, name string, handler http.Handler) (protocol.Ready, <-chan error) {
+	t.Helper()
+	ready := make(chan protocol.Ready, 4)
+	res := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	target, _ := url.Parse(e.local.URL)
+	go func() {
+		res <- client.Run(ctx, client.Config{Server: e.base, Token: token, Name: name, Target: target, Handler: handler,
+			Logger: discard, OnReady: func(r protocol.Ready) { ready <- r }})
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-res:
+		case <-time.After(10 * time.Second):
+		}
+	})
+	select {
+	case r := <-ready:
+		return r, res
+	case err := <-res:
+		t.Fatalf("client exited before ready: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("tunnel never became ready")
+	}
+	return protocol.Ready{}, nil
+}
+
+func TestCloudSignupLoginClaim(t *testing.T) {
+	e, _ := setupEnv(t, opts{cloud: true, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "app page")
+	})})
+	alice := e.devLogin(t, "alice")
+	tok := alice.newToken("laptop")
+
+	r1, _ := e.startClient(t, tok, "", nil)
+	if r1.Name == "" || !strings.HasSuffix(r1.URL, fmt.Sprintf(".localhost:%d", e.port)) {
+		t.Fatalf("ready: %+v", r1)
+	}
+	host := fmt.Sprintf("%s.localhost:%d", r1.Name, e.port)
+	resp, err := e.do(context.Background(), "POST", "/", host, strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := readAll(t, resp.Body); resp.StatusCode != 200 || body != "app page" {
+		t.Fatalf("public request: %d %q", resp.StatusCode, body)
+	}
+	resp.Body.Close()
+
+	u, err := e.store.UserByLogin(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.SetPlan(context.Background(), u.ID, "pro"); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := alice.post("/dashboard/subdomains", url.Values{"name": {"acme"}}); code != 200 && code != 303 {
+		t.Fatalf("claim: %d %s", code, body)
+	}
+	r2, _ := e.startClient(t, tok, "acme", nil)
+	if r2.Name != "acme" {
+		t.Fatalf("second tunnel: %+v", r2)
+	}
+	_, page := alice.get("/dashboard")
+	if n := strings.Count(page, "<td>http://"); n != 2 {
+		t.Fatalf("dashboard shows %d tunnels, want 2:\n%s", n, page)
+	}
+}
+
+func TestCloudFreeSecondTunnelRefused(t *testing.T) {
+	e, _ := setupEnv(t, opts{cloud: true})
+	tok := e.devLogin(t, "alice").newToken("laptop")
+	e.startClient(t, tok, "", nil)
+
+	target, _ := url.Parse(e.local.URL)
+	err := client.Run(context.Background(), client.Config{Server: e.base, Token: tok, Name: "", Target: target, Logger: discard})
+	var pe *protocol.Error
+	if !errors.As(err, &pe) || pe.Code != protocol.CodeLimitReached ||
+		pe.Message != "tunnel limit reached: your free plan allows 1 concurrent tunnel(s)" {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestCloudFreeWarningShowsOwner(t *testing.T) {
+	hits := make(chan string, 4)
+	e, _ := setupEnv(t, opts{cloud: true, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits <- r.Method
+		fmt.Fprint(w, "app page")
+	})})
+	tok := e.devLogin(t, "alice").newToken("laptop")
+	r, _ := e.startClient(t, tok, "", nil)
+	host := fmt.Sprintf("%s.localhost:%d", r.Name, e.port)
+
+	req := newBrowserGET(t, "http://"+host+"/")
+	resp, err := e.httpc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readAll(t, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(body, "@alice") || strings.Contains(body, "app page") {
+		t.Fatalf("warning: %d %q", resp.StatusCode, body)
+	}
+	resp, err = e.do(context.Background(), "POST", "/hook", host, strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if m := recvTimeout(t, hits, 5*time.Second); resp.StatusCode != 200 || m != "POST" {
+		t.Fatalf("webhook: %d %s", resp.StatusCode, m)
+	}
+}
+
+func TestCloudBanDisconnects(t *testing.T) {
+	e, srv := setupEnv(t, opts{cloud: true})
+	tok := e.devLogin(t, "mallory").newToken("laptop")
+	_, res := e.startClient(t, tok, "", nil)
+
+	ctx := context.Background()
+	u, err := e.store.UserByLogin(ctx, "mallory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.BanUser(ctx, u, "abuse"); err != nil {
+		t.Fatal(err)
+	}
+	srv.PollBansNow(ctx)
+	select {
+	case err := <-res:
+		var pe *protocol.Error
+		if !errors.As(err, &pe) || pe.Code != protocol.CodeBanned {
+			t.Fatalf("client ended with %v, want banned", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("banned client was not disconnected")
+	}
+}
+
+func TestSelfHostedStillRandomNames(t *testing.T) {
+	get, host, _ := setup(t, opts{handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "hi")
+	})})
+	resp := get("/")
+	defer resp.Body.Close()
+	if body := readAll(t, resp.Body); resp.StatusCode != 200 || body != "hi" || !strings.Contains(host, "-") {
+		t.Fatalf("%s: %d %q", host, resp.StatusCode, body)
+	}
 }
