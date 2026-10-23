@@ -242,7 +242,18 @@ func TestRunHTTPInspector(t *testing.T) {
 		var list []json.RawMessage
 		return json.NewDecoder(r.Body).Decode(&list) == nil && len(list) == 1
 	})
+
+	// An open inspector tab (SSE stream) must not hold up Ctrl+C.
+	ev, err := http.Get(insp + "/api/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ev.Body.Close()
+	start := time.Now()
 	stopRun(t, cancel, codeCh, &errb)
+	if d := time.Since(start); d > 1500*time.Millisecond {
+		t.Fatalf("shutdown took %v with an event stream open", d)
+	}
 }
 
 func TestRunHTTPInspectorRejectsPublicAddr(t *testing.T) {
@@ -261,7 +272,7 @@ func TestListenInspectorFallback(t *testing.T) {
 		t.Skipf("cannot bind %s: %v", defaultInspectAddr, err)
 	}
 	defer hold.Close()
-	ln, err := listenInspector(defaultInspectAddr)
+	ln, err := listenInspector(defaultInspectAddr, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,9 +285,28 @@ func TestListenInspectorFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer other.Close()
-	if ln2, err := listenInspector(other.Addr().String()); err == nil {
+	if ln2, err := listenInspector(other.Addr().String(), false); err == nil {
 		ln2.Close()
 		t.Fatal("explicit taken address should fail")
+	}
+	if ln2, err := listenInspector(defaultInspectAddr, false); err == nil {
+		ln2.Close()
+		t.Fatal("explicitly requested default address should not fall back")
+	}
+}
+
+func TestRunHTTPExplicitInspectAddrTaken(t *testing.T) {
+	hold, err := net.Listen("tcp", defaultInspectAddr)
+	if err != nil {
+		t.Skipf("cannot bind %s: %v", defaultInspectAddr, err)
+	}
+	defer hold.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // a fallback would keep running
+	defer cancel()
+	var out, errb syncBuf
+	code := run(ctx, []string{"http", "--inspect-addr", defaultInspectAddr, "--server", "http://127.0.0.1:1", "3000"}, &out, &errb, cfgPath(t))
+	if code != 1 || !strings.Contains(errb.String(), defaultInspectAddr) {
+		t.Fatalf("code=%d stderr=%q, want bind error for %s", code, errb.String(), defaultInspectAddr)
 	}
 }
 

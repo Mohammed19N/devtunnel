@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -35,14 +36,15 @@ func checkLoopbackAddr(addr string) error {
 	return nil
 }
 
-// listenInspector binds addr; if addr is the default and in use, it tries
-// 127.0.0.1:4041..4049. A non-loopback host is rejected before binding.
-func listenInspector(addr string) (net.Listener, error) {
+// listenInspector binds addr; with fallback set (--inspect-addr not given) and
+// addr in use, it tries 127.0.0.1:4041..4049. A non-loopback host is rejected
+// before binding.
+func listenInspector(addr string, fallback bool) (net.Listener, error) {
 	if err := checkLoopbackAddr(addr); err != nil {
 		return nil, err
 	}
 	ln, err := net.Listen("tcp", addr)
-	if err == nil || addr != defaultInspectAddr {
+	if err == nil || !fallback {
 		return ln, err
 	}
 	// Any bind error (EADDRINUSE differs per OS) falls back to the next ports.
@@ -117,7 +119,9 @@ func runHTTP(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 	var handler http.Handler
 	inspectorURL := ""
 	if *inspect {
-		ln, err := listenInspector(*inspectAddr)
+		explicit := false
+		fs.Visit(func(f *flag.Flag) { explicit = explicit || f.Name == "inspect-addr" })
+		ln, err := listenInspector(*inspectAddr, !explicit)
 		if err != nil {
 			fmt.Fprintln(stderr, "error:", err)
 			return 1
@@ -128,12 +132,13 @@ func runHTTP(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 		handler = insp.Handler()
 		// No WriteTimeout: it would kill the SSE stream.
 		hs := &http.Server{Handler: insp.UI(), ReadHeaderTimeout: 10 * time.Second}
+		hs.RegisterOnShutdown(insp.CloseStreams)
 		go func() { _ = hs.Serve(ln) }()
 		defer func() {
 			sctx, scancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer scancel()
 			if hs.Shutdown(sctx) != nil {
-				_ = hs.Close() // SSE streams keep Shutdown waiting
+				_ = hs.Close()
 			}
 		}()
 	}
