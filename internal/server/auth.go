@@ -6,9 +6,16 @@ import (
 	"errors"
 )
 
+// Account is an authenticated tunnel owner.
+type Account struct {
+	ID    string // decimal user id, or "static" / "anonymous"
+	Login string
+	Plan  Plan
+}
+
 // Authenticator validates a client token and returns the owning account.
 type Authenticator interface {
-	Authenticate(ctx context.Context, token string) (accountID string, err error)
+	Authenticate(ctx context.Context, token string) (Account, error)
 }
 
 // StaticTokens is an Authenticator over a fixed token list.
@@ -16,9 +23,9 @@ type Authenticator interface {
 type StaticTokens []string
 
 // Authenticate implements Authenticator.
-func (s StaticTokens) Authenticate(_ context.Context, token string) (string, error) {
+func (s StaticTokens) Authenticate(_ context.Context, token string) (Account, error) {
 	if len(s) == 0 {
-		return "anonymous", nil
+		return Account{ID: "anonymous", Plan: PlanUnlimited}, nil
 	}
 	ok := false
 	for _, t := range s {
@@ -27,7 +34,7 @@ func (s StaticTokens) Authenticate(_ context.Context, token string) (string, err
 		}
 	}
 	if !ok {
-		return "", errors.New("invalid token")
+		return Account{}, errors.New("invalid token")
 	}
-	return "static", nil
+	return Account{ID: "static", Plan: PlanUnlimited}, nil
 }

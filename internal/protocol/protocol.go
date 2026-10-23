@@ -27,6 +27,9 @@ const (
 	CodeInvalidName     = "invalid_name"
 	CodeNameTaken       = "name_taken"
 	CodeInternal        = "internal"
+	CodeLimitReached    = "limit_reached"
+	CodeNameNotOwned    = "name_not_owned"
+	CodeBanned          = "banned"
 )
 
 // Hello is the first frame a client sends during the handshake.
@@ -41,8 +44,11 @@ type Hello struct {
 
 // Ready is returned by the server when a tunnel has been granted.
 type Ready struct {
-	URL  string `json:"url"`
-	Name string `json:"name"`
+	URL       string `json:"url"`
+	Name      string `json:"name"`
+	Plan      string `json:"plan,omitempty"`
+	RateLimit int    `json:"rate_limit,omitempty"`
+	Bandwidth int64  `json:"bandwidth,omitempty"`
 }
 
 // Error is a handshake or protocol error reported by the server.
@@ -114,7 +120,8 @@ func IsFatal(err error) bool {
 		return false
 	}
 	switch pe.Code {
-	case CodeVersionMismatch, CodeUnauthorized, CodeInvalidName, CodeNameTaken:
+	case CodeVersionMismatch, CodeUnauthorized, CodeInvalidName, CodeNameTaken,
+		CodeLimitReached, CodeNameNotOwned, CodeBanned:
 		return true
 	}
 	return false

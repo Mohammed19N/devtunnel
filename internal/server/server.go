@@ -25,6 +25,9 @@ type Config struct {
 	RateLimit         int    // requests per minute per tunnel; 0 = unlimited
 	BrowserWarning    bool   // show a one-time interstitial to browser navigations
 	CookieSecret      []byte // HMAC key for the warned cookie; empty = 32 random bytes per start
+
+	Directory        Directory // cloud account directory; nil = self-hosted
+	FreeBandwidthCap int64     // bytes per month across all Free accounts; 0 = 500<<30 when Directory != nil
 }
 
 // Server is the Passway tunnel server.
@@ -50,6 +53,12 @@ func New(cfg Config) *Server {
 	if len(cfg.CookieSecret) == 0 {
 		cfg.CookieSecret = make([]byte, 32)
 		_, _ = rand.Read(cfg.CookieSecret) // crypto/rand.Read never fails
+	}
+	if cfg.Directory != nil {
+		cfg.Auth = cfg.Directory
+		if cfg.FreeBandwidthCap == 0 {
+			cfg.FreeBandwidthCap = 500 << 30
+		}
 	}
 	if cfg.Auth == nil {
 		cfg.Auth = StaticTokens(nil)

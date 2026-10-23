@@ -39,7 +39,7 @@ func Open(path string) (*Store, error) {
 	// SQLite decodes %XX in file: URIs, so escape the characters that would
 	// otherwise end the path.
 	esc := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(path)
-	dsn := "file:" + esc + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	dsn := "file:" + esc + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err

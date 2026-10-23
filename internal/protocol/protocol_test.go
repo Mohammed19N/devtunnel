@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"reflect"
@@ -71,5 +72,25 @@ func TestIsFatal(t *testing.T) {
 				t.Fatalf("IsFatal(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestIsFatalNewCodes(t *testing.T) {
+	for _, c := range []string{CodeLimitReached, CodeNameNotOwned, CodeBanned} {
+		if !IsFatal(&Error{Code: c}) {
+			t.Errorf("%s should be fatal", c)
+		}
+	}
+}
+
+func TestReadyOmitsEmptyPlan(t *testing.T) {
+	b, err := json.Marshal(Ready{URL: "u", Name: "n"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{`"plan"`, `"rate_limit"`, `"bandwidth"`} {
+		if bytes.Contains(b, []byte(k)) {
+			t.Errorf("%s present in %s", k, b)
+		}
 	}
 }
