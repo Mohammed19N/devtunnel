@@ -667,7 +667,7 @@ function renderStatus() {
     t.className = 'tunnel';
     const m = u.match(/^(https?:\/\/)(.*)$/);
     t.append(
-      m && m[1] === 'https://' ? el('span', { class: 'lock', title: 'HTTPS' }, icon('lock')) : null,
+      m && m[1] === 'https://' ? el('span', { class: 'lock', title: 'HTTPS' }, icon('lock')) : '', // '' not null: native append(null) writes the text "null"
       el('span', { class: 'url', title: u }, m ? [el('span', { class: 'scheme' }, m[1]), m[2]] : u),
       S.status.target ? el('span', { class: 'arrow' }, icon('arrow')) : '',
       S.status.target ? el('span', { class: 'target', title: 'Forwarding to ' + S.status.target }, S.status.target.replace(/^https?:\/\//, '')) : '',

@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/mohammed19n/passway/internal/client"
+	"github.com/mohammed19n/passway/internal/inspector"
 	"github.com/mohammed19n/passway/internal/protocol"
 	"github.com/mohammed19n/passway/internal/server"
 )
@@ -28,6 +31,10 @@ type opts struct {
 	rewriteHost bool
 	tls         bool
 	target      *url.URL // overrides the local app's URL (e.g. a closed port)
+
+	inspector      bool // wrap the client's handler with an inspector
+	rateLimit      int  // server requests/minute per tunnel; 0 = off
+	browserWarning bool // server shows the interstitial to browser GETs
 }
 
 type env struct {
@@ -36,6 +43,7 @@ type env struct {
 	local      *httptest.Server
 	httpc      *http.Client
 	scheme     string
+	insp       *inspector.Inspector // nil unless opts.inspector
 }
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -61,7 +69,8 @@ func setupEnv(t *testing.T, o opts) (*env, *server.Server) {
 	if o.tls {
 		scheme = "https"
 	}
-	srv := server.New(server.Config{Domain: "localhost", PublicScheme: scheme, PublicPort: port, Logger: discard})
+	srv := server.New(server.Config{Domain: "localhost", PublicScheme: scheme, PublicPort: port, Logger: discard,
+		RateLimit: o.rateLimit, BrowserWarning: o.browserWarning})
 	ts.Config.Handler = srv
 	if o.tls {
 		ts.StartTLS()
@@ -81,6 +90,13 @@ func setupEnv(t *testing.T, o opts) (*env, *server.Server) {
 		target = o.target
 	}
 
+	var insp *inspector.Inspector
+	var handler http.Handler // nil = the client's default local proxy
+	if o.inspector {
+		insp = inspector.New(inspector.DefaultCapacity, client.NewProxy(target, o.rewriteHost, discard))
+		handler = insp.Handler()
+	}
+
 	ready := make(chan protocol.Ready, 4)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -91,6 +107,7 @@ func setupEnv(t *testing.T, o opts) (*env, *server.Server) {
 			Target:      target,
 			RewriteHost: o.rewriteHost,
 			Insecure:    o.tls,
+			Handler:     handler,
 			Logger:      discard,
 			OnReady:     func(r protocol.Ready) { ready <- r },
 		})
@@ -103,7 +120,7 @@ func setupEnv(t *testing.T, o opts) (*env, *server.Server) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("tunnel never became ready")
 	}
-	e := &env{port: port, scheme: scheme, publicHost: fmt.Sprintf("%s.localhost:%d", r.Name, port), local: local}
+	e := &env{port: port, scheme: scheme, publicHost: fmt.Sprintf("%s.localhost:%d", r.Name, port), local: local, insp: insp}
 	base := http.DefaultTransport
 	if o.tls {
 		base = ts.Client().Transport
@@ -137,6 +154,18 @@ func (e *env) do(ctx context.Context, method, path, host string, body io.Reader)
 	}
 	req.Host = host
 	return e.httpc.Do(req)
+}
+
+// recvTimeout receives from ch or fails the test after d.
+func recvTimeout[T any](t *testing.T, ch <-chan T, d time.Duration) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(d):
+		t.Fatal("timed out waiting on channel")
+		panic("unreachable")
+	}
 }
 
 func readAll(t *testing.T, r io.Reader) string {
@@ -241,7 +270,7 @@ func TestForwardedHeaders(t *testing.T) {
 		ch <- seen{r.Header.Get("X-Forwarded-For"), r.Header.Get("X-Forwarded-Host"), r.Header.Get("X-Forwarded-Proto"), r.Host}
 	})})
 	get("/").Body.Close()
-	s := <-ch
+	s := recvTimeout(t, ch, 5*time.Second)
 	if !strings.HasPrefix(s.xff, "127.0.0.1") || s.xfh != publicHost || s.xfp != "http" || s.host != publicHost {
 		t.Fatalf("unexpected headers: %+v (want host %s)", s, publicHost)
 	}
@@ -262,7 +291,7 @@ func TestForgedForwardedHeadersIgnored(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	h := <-ch
+	h := recvTimeout(t, ch, 5*time.Second)
 	if got := h.Get("X-Forwarded-For"); got != "127.0.0.1" {
 		t.Errorf("X-Forwarded-For = %q", got)
 	}
@@ -284,7 +313,7 @@ func TestRewriteHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if got, want := <-ch, strings.TrimPrefix(e.local.URL, "http://"); got != want {
+	if got, want := recvTimeout(t, ch, 5*time.Second), strings.TrimPrefix(e.local.URL, "http://"); got != want {
 		t.Fatalf("Host = %q, want %q", got, want)
 	}
 }
@@ -360,7 +389,7 @@ func TestTLSForwarding(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
-	if got := <-ch; got != "https" {
+	if got := recvTimeout(t, ch, 5*time.Second); got != "https" {
 		t.Fatalf("X-Forwarded-Proto = %q", got)
 	}
 }
@@ -420,4 +449,212 @@ func TestHostNormalization(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
+}
+
+func TestInspectorCaptureAndReplay(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/stripe-checkout-completed.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type hit struct {
+		body []byte
+		sig  string
+	}
+	hits := make(chan hit, 4)
+	e, _ := setupEnv(t, opts{inspector: true, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		hits <- hit{b, r.Header.Get("Stripe-Signature")}
+		w.WriteHeader(200)
+	})})
+	const sig = "t=1729612800,v1=deadbeef"
+	req, _ := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%d/webhooks/stripe", e.port), bytes.NewReader(fixture))
+	req.Host = e.publicHost
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Stripe-Signature", sig)
+	resp, err := e.httpc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	first := recvTimeout(t, hits, 5*time.Second)
+	if !bytes.Equal(first.body, fixture) || first.sig != sig {
+		t.Fatalf("first hit: sig %q, %d bytes", first.sig, len(first.body))
+	}
+
+	list := e.insp.Store().List()
+	if len(list) != 1 {
+		t.Fatalf("store has %d exchanges, want 1", len(list))
+	}
+	ex, ok := e.insp.Store().Get(list[0].ID)
+	if !ok || !bytes.Equal(ex.Request.Body.Data, fixture) || ex.Response.Status != 200 {
+		t.Fatalf("captured exchange: %+v", ex)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := e.insp.Replay(ctx, ex.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	second := recvTimeout(t, hits, 5*time.Second)
+	if !bytes.Equal(second.body, fixture) || second.sig != sig {
+		t.Fatalf("replayed hit: sig %q, %d bytes", second.sig, len(second.body))
+	}
+	if n := len(e.insp.Store().List()); n != 2 {
+		t.Fatalf("store has %d exchanges after replay, want 2", n)
+	}
+}
+
+func TestInspectorStreamingStillWorks(t *testing.T) {
+	e, _ := setupEnv(t, opts{inspector: true, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("a"))
+		w.(http.Flusher).Flush()
+		time.Sleep(300 * time.Millisecond)
+		w.Write([]byte("b"))
+	})})
+	resp, err := e.do(context.Background(), "GET", "/", e.publicHost, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	start := time.Now()
+	buf := make([]byte, 1)
+	if _, err := io.ReadFull(resp.Body, buf); err != nil || buf[0] != 'a' {
+		t.Fatalf("first read: %v %q", err, buf)
+	}
+	if d := time.Since(start); d > 250*time.Millisecond {
+		t.Fatalf("first chunk took %v, not streamed", d)
+	}
+	if rest := readAll(t, resp.Body); rest != "b" {
+		t.Fatalf("rest = %q", rest)
+	}
+}
+
+func TestInspectorWebSocket(t *testing.T) {
+	e, _ := setupEnv(t, opts{inspector: true, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		for {
+			typ, b, err := c.Read(r.Context())
+			if err != nil {
+				return
+			}
+			if c.Write(r.Context(), typ, b) != nil {
+				return
+			}
+		}
+	})})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws://"+e.publicHost+"/ws", &websocket.DialOptions{
+		HTTPClient: &http.Client{Transport: e.pin(http.DefaultTransport, false)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	if err := c.Write(ctx, websocket.MessageText, []byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	if _, b, err := c.Read(ctx); err != nil || string(b) != "ping" {
+		t.Fatalf("got %q, %v", b, err)
+	}
+	c.Close(websocket.StatusNormalClosure, "")
+
+	// The exchange is recorded when the hijacked connection ends.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		for _, s := range e.insp.Store().List() {
+			if s.Upgraded {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no upgraded exchange recorded: %+v", e.insp.Store().List())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestRateLimitE2E(t *testing.T) {
+	get, _, _ := setup(t, opts{rateLimit: 3, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})})
+	for i := 0; i < 3; i++ {
+		resp := get("/")
+		resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("request %d: status %d", i+1, resp.StatusCode)
+		}
+	}
+	resp := get("/")
+	defer resp.Body.Close()
+	if resp.StatusCode != 429 || resp.Header.Get("Retry-After") == "" {
+		t.Fatalf("got %d, Retry-After %q", resp.StatusCode, resp.Header.Get("Retry-After"))
+	}
+}
+
+func TestBrowserWarningE2E(t *testing.T) {
+	type seen struct{ method, path string }
+	hits := make(chan seen, 4)
+	e, _ := setupEnv(t, opts{browserWarning: true, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits <- seen{r.Method, r.URL.RequestURI()}
+		fmt.Fprint(w, "app page")
+	})})
+	jar, _ := cookiejar.New(nil)
+	browser := &http.Client{
+		Jar:       jar,
+		Transport: e.pin(http.DefaultTransport, false),
+		Timeout:   10 * time.Second,
+	}
+	// The jar keys on the URL host, so request the public host and dial the pinned port.
+	resp, err := browser.Do(newBrowserGET(t, "http://"+e.publicHost+"/dash?x=1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readAll(t, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(body, "/_passway/continue?to=") || strings.Contains(body, "app page") {
+		t.Fatalf("expected warning page, got %d %q", resp.StatusCode, body)
+	}
+	select {
+	case h := <-hits:
+		t.Fatalf("warning page leaked a request to the app: %+v", h)
+	default:
+	}
+
+	// The browser follows the continue link; the redirect lands on the original path.
+	cont := "http://" + e.publicHost + "/_passway/continue?to=" + url.QueryEscape("/dash?x=1")
+	resp, err = browser.Do(newBrowserGET(t, cont))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = readAll(t, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || body != "app page" {
+		t.Fatalf("after continue: %d %q", resp.StatusCode, body)
+	}
+	if h := recvTimeout(t, hits, 5*time.Second); h.method != "GET" || h.path != "/dash?x=1" {
+		t.Fatalf("app saw %+v", h)
+	}
+
+	// A webhook POST with no cookie is never interrupted.
+	resp, err = e.do(context.Background(), "POST", "/webhooks/stripe", e.publicHost, strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if h := recvTimeout(t, hits, 5*time.Second); resp.StatusCode != 200 || h.method != "POST" || h.path != "/webhooks/stripe" {
+		t.Fatalf("webhook: %d %+v", resp.StatusCode, h)
+	}
+}
+
+func newBrowserGET(t *testing.T, u string) *http.Request {
+	t.Helper()
+	req, err := http.NewRequest("GET", u, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	return req
 }

@@ -270,3 +270,19 @@ func TestUIIndex(t *testing.T) {
 		t.Error("index has @import")
 	}
 }
+
+// Element.append(null) writes the text "null", which showed up in the top bar
+// of the tunnel URL on http tunnels. Direct appends must never be handed null.
+func TestUIStatusBarNeverAppendsNull(t *testing.T) {
+	i := strings.Index(string(indexHTML), "t.append(\n")
+	if i < 0 {
+		t.Fatal("status bar append not found")
+	}
+	end := strings.Index(string(indexHTML)[i:], "\n    );")
+	if end < 0 {
+		t.Fatal("end of status bar append not found")
+	}
+	if call := string(indexHTML)[i : i+end]; regexp.MustCompile(`:\s*null\s*,`).MatchString(call) {
+		t.Fatalf("t.append(...) argument can be null:\n%s", call)
+	}
+}
