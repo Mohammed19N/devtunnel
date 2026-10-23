@@ -111,5 +111,6 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 			return
 		}
 	}
+	t.requests.Add(1)
 	t.proxy.ServeHTTP(w, r)
 }

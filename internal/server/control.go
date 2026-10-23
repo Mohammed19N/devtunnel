@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -60,7 +61,8 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		fail(&protocol.Error{Code: protocol.CodeVersionMismatch, Message: "unsupported protocol version; please upgrade passway"})
 		return
 	}
-	if _, err := s.cfg.Auth.Authenticate(r.Context(), hello.Token); err != nil {
+	acc, err := s.cfg.Auth.Authenticate(r.Context(), hello.Token)
+	if err != nil {
 		var pe *protocol.Error
 		switch {
 		case errors.As(err, &pe):
@@ -79,13 +81,18 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	t := &Tunnel{session: sess}
+	t := &Tunnel{session: sess, Account: acc, ClientVersion: hello.ClientVersion, ConnectedAt: time.Now()}
 	newTunnelProxy(t, s.cfg.MaxConnsPerTunnel, s.log)
-	replaced, err := s.registry.Claim(ClaimRequest{
-		Name:          hello.Name,
-		PreferredName: hello.PreferredName,
-		SessionID:     hello.SessionID,
-	}, t)
+	var replaced *Tunnel
+	if s.cfg.Directory != nil {
+		replaced, err = s.claimCloud(r.Context(), acc, hello, t)
+	} else {
+		replaced, err = s.registry.Claim(ClaimRequest{
+			Name:          hello.Name,
+			PreferredName: hello.PreferredName,
+			SessionID:     hello.SessionID,
+		}, t)
+	}
 	if err != nil {
 		var pe *protocol.Error
 		if !errors.As(err, &pe) {
@@ -103,9 +110,11 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		replaced.session.Close()
 	}
 
-	if err := protocol.WriteFrame(ctrl, protocol.HelloResponse{
-		Ready: &protocol.Ready{URL: s.PublicURL(t.Name), Name: t.Name},
-	}); err != nil {
+	ready := &protocol.Ready{URL: s.PublicURL(t.Name), Name: t.Name}
+	if s.cfg.Directory != nil {
+		ready.Plan, ready.RateLimit, ready.Bandwidth = acc.Plan.Name, acc.Plan.RateLimit, acc.Plan.Bandwidth
+	}
+	if err := protocol.WriteFrame(ctrl, protocol.HelloResponse{Ready: ready}); err != nil {
 		return
 	}
 	s.log.Info("tunnel up", "name", t.Name, "session", t.SessionID[:8])
@@ -129,4 +138,79 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		sess.Close()
 	}()
 	<-sess.CloseChan()
+}
+
+// transient wraps a directory failure as a retryable error.
+func (s *Server) transient(what string, err error) error {
+	s.log.Warn("directory "+what+" failed", "err", err)
+	return &protocol.Error{Code: protocol.CodeInternal, Message: "temporary server error; retrying"}
+}
+
+// claimCloud resolves and claims a name for acc using the account directory.
+// The tunnel limit is enforced inside Registry.Claim so concurrent handshakes
+// cannot overshoot it.
+func (s *Server) claimCloud(ctx context.Context, acc Account, hello protocol.Hello, t *Tunnel) (*Tunnel, error) {
+	dir := s.cfg.Directory
+	banned := &protocol.Error{Code: protocol.CodeBanned, Message: "account suspended"}
+	if b, err := dir.Banned(ctx, acc, ""); err != nil {
+		return nil, s.transient("ban check", err)
+	} else if b {
+		return nil, banned
+	}
+	req := ClaimRequest{
+		SessionID:  hello.SessionID,
+		AccountID:  acc.ID,
+		PlanName:   acc.Plan.Name,
+		MaxTunnels: acc.Plan.MaxTunnels,
+	}
+	if acc.Plan.MaxTunnels > 0 && s.registry.CountAccount(acc.ID, hello.SessionID) >= acc.Plan.MaxTunnels {
+		return nil, &protocol.Error{Code: protocol.CodeLimitReached,
+			Message: fmt.Sprintf("tunnel limit reached: your %s plan allows %d concurrent tunnel(s)", acc.Plan.Name, acc.Plan.MaxTunnels)}
+	}
+
+	if hello.Name != "" {
+		owned, err := dir.Owns(ctx, acc, hello.Name)
+		if err != nil {
+			return nil, s.transient("ownership check", err)
+		}
+		if !owned {
+			return nil, &protocol.Error{Code: protocol.CodeNameNotOwned, Message: fmt.Sprintf("you don't own %q; claim it in the dashboard", hello.Name)}
+		}
+		if b, err := dir.Banned(ctx, acc, hello.Name); err != nil {
+			return nil, s.transient("ban check", err)
+		} else if b {
+			return nil, banned
+		}
+		req.Name = hello.Name
+		return s.registry.Claim(req, t)
+	}
+
+	names, err := dir.Names(ctx, acc)
+	if err != nil {
+		return nil, s.transient("names", err)
+	}
+	cands := make([]string, 0, len(names)+1)
+	if p := hello.PreferredName; p != "" {
+		if owned, err := dir.Owns(ctx, acc, p); err != nil {
+			return nil, s.transient("ownership check", err)
+		} else if owned {
+			cands = append(cands, p)
+		}
+	}
+	cands = append(cands, names...)
+	for _, name := range cands {
+		if b, err := dir.Banned(ctx, acc, name); err != nil {
+			return nil, s.transient("ban check", err)
+		} else if b {
+			continue
+		}
+		req.Name = name
+		replaced, err := s.registry.Claim(req, t)
+		var pe *protocol.Error
+		if errors.As(err, &pe) && pe.Code == protocol.CodeNameTaken {
+			continue
+		}
+		return replaced, err
+	}
+	return nil, &protocol.Error{Code: protocol.CodeNameTaken, Message: "all your subdomains are in use; use --name or upgrade"}
 }

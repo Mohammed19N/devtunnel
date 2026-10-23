@@ -149,3 +149,30 @@ func TestReleasePurgesExpiredHolds(t *testing.T) {
 		t.Fatalf("held = %v, want only bbb", r.held)
 	}
 }
+
+func TestClaimEnforcesAccountLimit(t *testing.T) {
+	r, _ := newTestRegistry()
+	acc := Account{ID: "u1"}
+	a := &Tunnel{Account: acc}
+	req := func(name, sess string) ClaimRequest {
+		return ClaimRequest{Name: name, SessionID: sess, AccountID: "u1", PlanName: "free", MaxTunnels: 1}
+	}
+	if _, err := r.Claim(req("one", "A"), a); err != nil {
+		t.Fatal(err)
+	}
+	wantCode(t, claimErr(r, req("two", "B"), &Tunnel{Account: acc}), protocol.CodeLimitReached)
+	// Same session takes over without counting against the limit.
+	if _, err := r.Claim(req("one", "A"), &Tunnel{Account: acc}); err != nil {
+		t.Fatal(err)
+	}
+	if n := r.CountAccount("u1", "A"); n != 0 {
+		t.Fatalf("CountAccount = %d", n)
+	}
+	if n := r.CountAccount("u1", ""); n != 1 || len(r.ByAccount("u1")) != 1 {
+		t.Fatalf("CountAccount = %d", n)
+	}
+	// Another account is unaffected.
+	if _, err := r.Claim(ClaimRequest{Name: "xyz", SessionID: "C", AccountID: "u2", MaxTunnels: 1}, &Tunnel{Account: Account{ID: "u2"}}); err != nil {
+		t.Fatal(err)
+	}
+}

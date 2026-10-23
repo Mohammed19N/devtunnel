@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -83,6 +84,23 @@ func (s *Server) PublicURL(name string) string {
 		host = net.JoinHostPort(host, strconv.Itoa(s.cfg.PublicPort))
 	}
 	return s.cfg.PublicScheme + "://" + host
+}
+
+// TunnelSnapshot describes one live tunnel for the dashboard.
+type TunnelSnapshot struct {
+	URL, ClientVersion string
+	ConnectedAt        time.Time
+	Requests           int64
+}
+
+// TunnelsFor returns the live tunnels of accountID, oldest first.
+func (s *Server) TunnelsFor(accountID string) []TunnelSnapshot {
+	var out []TunnelSnapshot
+	for _, t := range s.registry.ByAccount(accountID) {
+		out = append(out, TunnelSnapshot{URL: s.PublicURL(t.Name), ClientVersion: t.ClientVersion, ConnectedAt: t.ConnectedAt, Requests: t.Requests()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ConnectedAt.Before(out[j].ConnectedAt) })
+	return out
 }
 
 // CloseTunnels closes every active tunnel session. The server keeps accepting new tunnels.

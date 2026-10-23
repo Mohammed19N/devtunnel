@@ -1,9 +1,11 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -12,16 +14,29 @@ import (
 
 // Tunnel is a registered tunnel owned by one client session.
 type Tunnel struct {
-	Name      string
-	SessionID string
+	Name          string
+	SessionID     string
+	Account       Account
+	ClientVersion string
+	ConnectedAt   time.Time
 
+	requests  atomic.Int64
 	session   *yamux.Session
 	proxy     *httputil.ReverseProxy
 	transport *http.Transport
 }
 
-// ClaimRequest describes the name a client wants.
-type ClaimRequest struct{ Name, PreferredName, SessionID string }
+// Requests returns the number of requests proxied through t.
+func (t *Tunnel) Requests() int64 { return t.requests.Load() }
+
+// ClaimRequest describes the name a client wants. With MaxTunnels > 0, Claim
+// refuses the tunnel when AccountID already has that many active tunnels under
+// other sessions.
+type ClaimRequest struct {
+	Name, PreferredName, SessionID string
+	AccountID, PlanName            string
+	MaxTunnels                     int
+}
 
 type hold struct {
 	sessionID  string
@@ -91,6 +106,11 @@ func (r *Registry) Claim(req ClaimRequest, t *Tunnel) (replaced *Tunnel, err err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	if req.MaxTunnels > 0 && r.countAccount(req.AccountID, req.SessionID) >= req.MaxTunnels {
+		return nil, &protocol.Error{Code: protocol.CodeLimitReached,
+			Message: fmt.Sprintf("tunnel limit reached: your %s plan allows %d concurrent tunnel(s)", req.PlanName, req.MaxTunnels)}
+	}
+
 	if req.Name != "" {
 		if err := ValidateName(req.Name); err != nil {
 			return nil, err
@@ -157,6 +177,37 @@ func (r *Registry) All() []*Tunnel {
 	out := make([]*Tunnel, 0, len(r.active))
 	for _, t := range r.active {
 		out = append(out, t)
+	}
+	return out
+}
+
+// countAccount counts active tunnels of accountID outside exceptSession. Caller holds mu.
+func (r *Registry) countAccount(accountID, exceptSession string) int {
+	n := 0
+	for _, t := range r.active {
+		if t.Account.ID == accountID && t.SessionID != exceptSession {
+			n++
+		}
+	}
+	return n
+}
+
+// CountAccount counts active tunnels of accountID outside exceptSession.
+func (r *Registry) CountAccount(accountID, exceptSession string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.countAccount(accountID, exceptSession)
+}
+
+// ByAccount returns the active tunnels of accountID.
+func (r *Registry) ByAccount(accountID string) []*Tunnel {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*Tunnel
+	for _, t := range r.active {
+		if t.Account.ID == accountID {
+			out = append(out, t)
+		}
 	}
 	return out
 }

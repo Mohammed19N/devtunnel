@@ -487,3 +487,187 @@ func (fakeDir) AddUsage(context.Context, Account, int64) error          { return
 func (fakeDir) Usage(context.Context, Account) (int64, error)           { return 0, nil }
 func (fakeDir) PlanUsage(context.Context, string) (int64, error)        { return 0, nil }
 func (fakeDir) BannedLists(context.Context) ([]string, []string, error) { return nil, nil, nil }
+
+// fakeDirectory is an in-memory Directory for handshake tests.
+type fakeDirectory struct {
+	mu     sync.Mutex
+	acc    Account
+	names  []string
+	banned map[string]bool // "" = the account itself
+}
+
+func newFakeDirectory(plan Plan, names ...string) *fakeDirectory {
+	return &fakeDirectory{acc: Account{ID: "u1", Login: "alice", Plan: plan}, names: names, banned: map[string]bool{}}
+}
+
+func (d *fakeDirectory) Authenticate(_ context.Context, token string) (Account, error) {
+	if token == "bad" {
+		return Account{}, ErrInvalidToken
+	}
+	return d.acc, nil
+}
+func (d *fakeDirectory) Names(context.Context, Account) ([]string, error) { return d.names, nil }
+func (d *fakeDirectory) Owns(_ context.Context, _ Account, name string) (bool, error) {
+	for _, n := range d.names {
+		if n == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+func (d *fakeDirectory) Banned(_ context.Context, _ Account, label string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.banned[label], nil
+}
+func (d *fakeDirectory) AddUsage(context.Context, Account, int64) error   { return nil }
+func (d *fakeDirectory) Usage(context.Context, Account) (int64, error)    { return 0, nil }
+func (d *fakeDirectory) PlanUsage(context.Context, string) (int64, error) { return 0, nil }
+func (d *fakeDirectory) BannedLists(context.Context) ([]string, []string, error) {
+	return nil, nil, nil
+}
+
+func newCloudServer(t *testing.T, d *fakeDirectory) (*Server, *httptest.Server) {
+	return newTestServerCfg(t, nil, func(c *Config) { c.Directory = d })
+}
+
+func TestCloudDefaultName(t *testing.T) {
+	_, ts := newCloudServer(t, newFakeDirectory(PlanFree, "quick-otter-42", "acme"))
+	resp, _ := dialRaw(t, ts, hello("", "s1"))
+	if resp.Ready == nil || resp.Ready.Name != "quick-otter-42" {
+		t.Fatalf("got %+v / %+v", resp.Ready, resp.Error)
+	}
+}
+
+func TestCloudNameNotOwned(t *testing.T) {
+	_, ts := newCloudServer(t, newFakeDirectory(PlanFree, "quick-otter-42", "acme"))
+	resp, _ := dialRaw(t, ts, hello("other", "s1"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeNameNotOwned || resp.Error.Message != `you don't own "other"; claim it in the dashboard` {
+		t.Fatalf("got %+v", resp.Error)
+	}
+	resp, _ = dialRaw(t, ts, hello("acme", "s1"))
+	if resp.Ready == nil || resp.Ready.Name != "acme" {
+		t.Fatalf("owned name: %+v", resp.Error)
+	}
+}
+
+func TestCloudTunnelLimit(t *testing.T) {
+	_, ts := newCloudServer(t, newFakeDirectory(PlanFree, "quick-otter-42", "acme"))
+	resp, _ := dialRaw(t, ts, hello("", "s1"))
+	if resp.Ready == nil {
+		t.Fatalf("first: %+v", resp.Error)
+	}
+	resp, _ = dialRaw(t, ts, hello("acme", "s2"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeLimitReached ||
+		resp.Error.Message != "tunnel limit reached: your free plan allows 1 concurrent tunnel(s)" {
+		t.Fatalf("second: %+v", resp)
+	}
+}
+
+func TestCloudReconnectSameSessionNotLimited(t *testing.T) {
+	_, ts := newCloudServer(t, newFakeDirectory(PlanFree, "quick-otter-42"))
+	resp, _ := dialRaw(t, ts, hello("", "s1"))
+	if resp.Ready == nil {
+		t.Fatalf("first: %+v", resp.Error)
+	}
+	resp, _ = dialRaw(t, ts, hello("", "s1"))
+	if resp.Ready == nil || resp.Ready.Name != "quick-otter-42" {
+		t.Fatalf("takeover: %+v", resp.Error)
+	}
+}
+
+func TestCloudConcurrentClaimsRespectLimit(t *testing.T) {
+	names := []string{"nm0", "nm1", "nm2", "nm3", "nm4", "nm5", "nm6", "nm7", "nm8", "nm9"}
+	_, ts := newCloudServer(t, newFakeDirectory(PlanFree, names...))
+	var wg sync.WaitGroup
+	var ready, limited atomic.Int32
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, _ := dialRaw(t, ts, hello("", "sess"+strconv.Itoa(i)))
+			switch {
+			case resp.Ready != nil:
+				ready.Add(1)
+			case resp.Error != nil && resp.Error.Code == protocol.CodeLimitReached:
+				limited.Add(1)
+			default:
+				t.Errorf("unexpected %+v", resp.Error)
+			}
+		}()
+	}
+	wg.Wait()
+	if ready.Load() != 1 || limited.Load() != 9 {
+		t.Fatalf("ready=%d limited=%d, want 1 and 9", ready.Load(), limited.Load())
+	}
+}
+
+func TestCloudAllNamesBusy(t *testing.T) {
+	d := newFakeDirectory(PlanPro, "one", "two")
+	_, ts := newCloudServer(t, d)
+	for i, n := range []string{"one", "two"} {
+		resp, _ := dialRaw(t, ts, hello(n, "s"+strconv.Itoa(i)))
+		if resp.Ready == nil {
+			t.Fatalf("%s: %+v", n, resp.Error)
+		}
+	}
+	resp, _ := dialRaw(t, ts, hello("", "s9"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeNameTaken ||
+		resp.Error.Message != "all your subdomains are in use; use --name or upgrade" {
+		t.Fatalf("got %+v", resp.Error)
+	}
+}
+
+func TestCloudBanned(t *testing.T) {
+	d := newFakeDirectory(PlanFree, "bad-host", "good-host")
+	d.banned[""] = true
+	_, ts := newCloudServer(t, d)
+	resp, _ := dialRaw(t, ts, hello("", "s1"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeBanned || resp.Error.Message != "account suspended" {
+		t.Fatalf("account ban: %+v", resp)
+	}
+	d.banned[""] = false
+	d.banned["bad-host"] = true
+	resp, _ = dialRaw(t, ts, hello("bad-host", "s1"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeBanned {
+		t.Fatalf("explicit banned label: %+v", resp)
+	}
+	resp, _ = dialRaw(t, ts, hello("", "s1"))
+	if resp.Ready == nil || resp.Ready.Name != "good-host" {
+		t.Fatalf("default should skip banned label: %+v", resp.Error)
+	}
+}
+
+func TestCloudReadyPlan(t *testing.T) {
+	_, ts := newCloudServer(t, newFakeDirectory(PlanFree, "quick-otter-42"))
+	resp, _ := dialRaw(t, ts, hello("", "s1"))
+	if resp.Ready == nil || resp.Ready.Plan != "free" || resp.Ready.RateLimit != 60 || resp.Ready.Bandwidth != 1<<30 {
+		t.Fatalf("got %+v / %+v", resp.Ready, resp.Error)
+	}
+}
+
+func TestCloudTunnelsFor(t *testing.T) {
+	srv, ts := newCloudServer(t, newFakeDirectory(PlanFree, "quick-otter-42"))
+	h := hello("", "s1")
+	h.ClientVersion = "1.2.3"
+	if resp, _ := dialRaw(t, ts, h); resp.Ready == nil {
+		t.Fatalf("%+v", resp.Error)
+	}
+	got := srv.TunnelsFor("u1")
+	if len(got) != 1 || got[0].ClientVersion != "1.2.3" || got[0].ConnectedAt.IsZero() || got[0].URL != srv.PublicURL("quick-otter-42") {
+		t.Fatalf("got %+v", got)
+	}
+	if len(srv.TunnelsFor("other")) != 0 {
+		t.Fatal("other account should see none")
+	}
+}
+
+func TestSelfHostedUnchanged(t *testing.T) {
+	_, ts := newTestServer(t, nil)
+	for i := 0; i < 3; i++ {
+		resp, _ := dialRaw(t, ts, hello("", "s"+strconv.Itoa(i)))
+		if resp.Ready == nil || resp.Ready.Plan != "" || resp.Ready.RateLimit != 0 || resp.Ready.Bandwidth != 0 {
+			t.Fatalf("got %+v / %+v", resp.Ready, resp.Error)
+		}
+	}
+}

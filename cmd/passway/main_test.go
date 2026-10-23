@@ -353,3 +353,69 @@ func TestRunHTTPTokenPrecedence(t *testing.T) {
 		})
 	}
 }
+
+// cloudDir is a minimal server.Directory for CLI tests: one Free account that owns one name.
+type cloudDir struct{}
+
+func (cloudDir) Authenticate(context.Context, string) (server.Account, error) {
+	return server.Account{ID: "u1", Login: "alice", Plan: server.PlanFree}, nil
+}
+func (cloudDir) Names(context.Context, server.Account) ([]string, error) {
+	return []string{"quick-otter-42"}, nil
+}
+func (cloudDir) Owns(_ context.Context, _ server.Account, n string) (bool, error) {
+	return n == "quick-otter-42", nil
+}
+func (cloudDir) Banned(context.Context, server.Account, string) (bool, error) { return false, nil }
+func (cloudDir) AddUsage(context.Context, server.Account, int64) error        { return nil }
+func (cloudDir) Usage(context.Context, server.Account) (int64, error)         { return 0, nil }
+func (cloudDir) PlanUsage(context.Context, string) (int64, error)             { return 0, nil }
+func (cloudDir) BannedLists(context.Context) ([]string, []string, error)      { return nil, nil, nil }
+
+func startCloudEnv(t *testing.T) string {
+	t.Helper()
+	ts := httptest.NewUnstartedServer(nil)
+	port := ts.Listener.Addr().(*net.TCPAddr).Port
+	ts.Config.Handler = server.New(server.Config{Domain: "localhost", PublicScheme: "http", PublicPort: port, Directory: cloudDir{}})
+	ts.Start()
+	t.Cleanup(ts.Close)
+	return fmt.Sprintf("http://localhost:%d", port)
+}
+
+func TestRunHTTPPlanLine(t *testing.T) {
+	su := startCloudEnv(t)
+	local := startLocal(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out, errb syncBuf
+	codeCh := make(chan int, 1)
+	cp := cfgPath(t)
+	go func() {
+		codeCh <- run(ctx, []string{"http", "--server", su, "--inspect=false", local.URL}, &out, &errb, cp)
+	}()
+	waitFor(t, "Plan line", func() bool {
+		return strings.Contains(out.String(), "Plan         Free \u00b7 60 req/min \u00b7 1 GB/month")
+	})
+	stopRun(t, cancel, codeCh, &errb)
+}
+
+func TestRunHTTPFatalMessage(t *testing.T) {
+	su := startCloudEnv(t)
+	local := startLocal(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out1, err1 syncBuf
+	codeCh := make(chan int, 1)
+	go func() {
+		codeCh <- run(ctx, []string{"http", "--server", su, "--inspect=false", local.URL}, &out1, &err1, cfgPath(t))
+	}()
+	waitFor(t, "first tunnel", func() bool { return strings.Contains(out1.String(), "Forwarding") })
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"http", "--server", su, "--inspect=false", local.URL}, &out, &errb, cfgPath(t))
+	want := "error: tunnel limit reached: your free plan allows 1 concurrent tunnel(s)\nmanage your account at " + su + "/dashboard\n"
+	if code != 1 || errb.String() != want {
+		t.Fatalf("code=%d stderr=%q, want %q", code, errb.String(), want)
+	}
+	stopRun(t, cancel, codeCh, &err1)
+}

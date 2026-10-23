@@ -161,6 +161,9 @@ func runHTTP(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 			mu.Lock()
 			defer mu.Unlock()
 			fmt.Fprintf(stdout, "Passway %s                                   (Ctrl+C to quit)\n\nForwarding   %s -> %s\n", version, r.URL, target)
+			if line := planLine(r); line != "" {
+				fmt.Fprintf(stdout, "Plan         %s\n", line)
+			}
 			if inspectorURL != "" {
 				fmt.Fprintf(stdout, "Inspector    %s\n", inspectorURL)
 			}
@@ -179,9 +182,35 @@ func runHTTP(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 	if err != nil {
 		var perr *protocol.Error
 		if errors.As(err, &perr) || ctx.Err() == nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
+			if perr != nil {
+				fmt.Fprintf(stderr, "error: %s\n", perr.Message)
+				if perr.Code == protocol.CodeLimitReached || perr.Code == protocol.CodeNameNotOwned {
+					fmt.Fprintf(stderr, "manage your account at %s/dashboard\n", strings.TrimRight(srv, "/"))
+				}
+			} else {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+			}
 			return 1
 		}
 	}
 	return 0
+}
+
+// planLine formats the plan summary, or "" when there is nothing to show.
+func planLine(r protocol.Ready) string {
+	if r.Plan == "" || r.Plan == "unlimited" {
+		return ""
+	}
+	parts := []string{strings.ToUpper(r.Plan[:1]) + r.Plan[1:]}
+	if r.RateLimit > 0 {
+		parts = append(parts, fmt.Sprintf("%d req/min", r.RateLimit))
+	}
+	if r.Bandwidth > 0 {
+		if r.Bandwidth%(1<<30) == 0 {
+			parts = append(parts, fmt.Sprintf("%d GB/month", r.Bandwidth>>30))
+		} else {
+			parts = append(parts, fmt.Sprintf("%.1f GB/month", float64(r.Bandwidth)/(1<<30)))
+		}
+	}
+	return strings.Join(parts, " \u00b7 ")
 }
