@@ -1,6 +1,7 @@
 package store
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -31,5 +32,17 @@ func TestOpenWAL(t *testing.T) {
 	}
 	if mode != "wal" {
 		t.Fatalf("journal_mode = %q", mode)
+	}
+}
+
+func TestOpenPathWithSpecialChars(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "we?ird#na%me.db")
+	s, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("db not at requested path: %v", err)
 	}
 }

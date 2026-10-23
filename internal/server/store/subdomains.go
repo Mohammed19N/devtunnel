@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -17,6 +18,7 @@ type Subdomain struct {
 // ClaimSubdomain fails with ErrTaken if anyone holds name and ErrLimit if the
 // user already holds max subdomains (max 0 = unlimited).
 func (s *Store) ClaimSubdomain(ctx context.Context, userID int64, name string, isDefault bool, max int) error {
+	name = strings.ToLower(name)
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
 		if max > 0 {
 			var n int
@@ -40,6 +42,7 @@ func (s *Store) ClaimSubdomain(ctx context.Context, userID int64, name string, i
 
 // ReleaseSubdomain frees a non-default subdomain owned by userID.
 func (s *Store) ReleaseSubdomain(ctx context.Context, userID int64, name string) error {
+	name = strings.ToLower(name)
 	return s.inTx(ctx, func(tx *sql.Tx) error {
 		var def bool
 		err := tx.QueryRowContext(ctx, `SELECT is_default FROM subdomains WHERE name = ? AND user_id = ?`, name, userID).Scan(&def)
@@ -79,6 +82,7 @@ func (s *Store) Subdomains(ctx context.Context, userID int64) ([]Subdomain, erro
 }
 
 func (s *Store) SubdomainOwner(ctx context.Context, name string) (int64, error) {
+	name = strings.ToLower(name)
 	var id int64
 	err := s.db.QueryRowContext(ctx, `SELECT user_id FROM subdomains WHERE name = ?`, name).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {

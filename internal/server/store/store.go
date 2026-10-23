@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 var (
@@ -36,7 +36,10 @@ type Store struct {
 // Open opens (creating if needed) the database at path and applies any
 // pending migrations.
 func Open(path string) (*Store, error) {
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	// SQLite decodes %XX in file: URIs, so escape the characters that would
+	// otherwise end the path.
+	esc := strings.NewReplacer("%", "%25", "?", "%3F", "#", "%23").Replace(path)
+	dsn := "file:" + esc + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -53,9 +56,6 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) migrate() error {
-	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY)`); err != nil {
-		return err
-	}
 	entries, err := migrationFS.ReadDir("migrations")
 	if err != nil {
 		return err
@@ -67,18 +67,27 @@ func (s *Store) migrate() error {
 	sort.Strings(names)
 	for _, name := range names {
 		version := strings.TrimSuffix(name, ".sql")
-		var n int
-		if err := s.db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version = ?`, version).Scan(&n); err != nil {
-			return err
-		}
-		if n > 0 {
-			continue
-		}
 		body, err := migrationFS.ReadFile("migrations/" + name)
 		if err != nil {
 			return err
 		}
+		// The applied check shares the transaction (and its write lock) with
+		// the migration, so concurrent starters cannot both apply it.
 		if err := s.inTx(context.Background(), func(tx *sql.Tx) error {
+			// schema_migrations is created by 0001; before that, nothing is applied.
+			var tbl int
+			if err := tx.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&tbl); err != nil {
+				return err
+			}
+			if tbl > 0 {
+				var n int
+				if err := tx.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version = ?`, version).Scan(&n); err != nil {
+					return err
+				}
+				if n > 0 {
+					return nil
+				}
+			}
 			if _, err := tx.Exec(string(body)); err != nil {
 				return err
 			}
@@ -130,5 +139,10 @@ func fromNullTS(v sql.NullInt64) *time.Time {
 }
 
 func isUnique(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	// SQLITE_CONSTRAINT_UNIQUE, SQLITE_CONSTRAINT_PRIMARYKEY
+	return se.Code() == 2067 || se.Code() == 1555
 }

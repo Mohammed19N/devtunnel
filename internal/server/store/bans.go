@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -11,17 +12,18 @@ type Ban struct {
 	CreatedAt           time.Time
 }
 
+// Values are stored lowercase, and lookups are case-insensitive.
 // AddBan inserts the ban, replacing any existing one for the same kind and value.
 func (s *Store) AddBan(ctx context.Context, b Ban) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO bans (kind, value, reason, created_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT (kind, value) DO UPDATE SET reason = excluded.reason`,
-		b.Kind, b.Value, b.Reason, ts(time.Now()))
+		b.Kind, strings.ToLower(b.Value), b.Reason, ts(time.Now()))
 	return err
 }
 
 func (s *Store) RemoveBan(ctx context.Context, kind, value string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM bans WHERE kind = ? AND value = ?`, kind, value)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM bans WHERE kind = ? AND value = ?`, kind, strings.ToLower(value))
 	return err
 }
 
@@ -46,6 +48,6 @@ func (s *Store) Bans(ctx context.Context) ([]Ban, error) {
 
 func (s *Store) IsBanned(ctx context.Context, kind, value string) (bool, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM bans WHERE kind = ? AND value = ?`, kind, value).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM bans WHERE kind = ? AND value = ?`, kind, strings.ToLower(value)).Scan(&n)
 	return n > 0, err
 }

@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS schema_migrations (
+CREATE TABLE schema_migrations (
 	version TEXT PRIMARY KEY
 );
 

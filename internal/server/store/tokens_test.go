@@ -1,10 +1,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"regexp"
-	"strings"
 	"testing"
 )
 
@@ -33,32 +34,7 @@ func TestTokenLifecycle(t *testing.T) {
 		t.Fatalf("list = %+v", list)
 	}
 
-	rows, err := s.db.Query(`SELECT * FROM tokens`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cols, _ := rows.Columns()
-	for rows.Next() {
-		vals := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range vals {
-			ptrs[i] = &vals[i]
-		}
-		rows.Scan(ptrs...)
-		for _, v := range vals {
-			var str string
-			switch x := v.(type) {
-			case string:
-				str = x
-			case []byte:
-				str = string(x)
-			}
-			if strings.Contains(str, plain) {
-				t.Fatal("plaintext token stored in DB")
-			}
-		}
-	}
-	rows.Close()
+	assertNoPlaintext(t, s, plain)
 
 	if err := s.RevokeToken(ctx, other.ID, tok.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("revoke other: %v", err)
@@ -87,5 +63,43 @@ func TestAdminTokens(t *testing.T) {
 	}
 	if err := s.RevokeToken(ctx, 0, tok.ID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// assertNoPlaintext scans every raw column of every tokens row, as bytes.
+func assertNoPlaintext(t *testing.T, s *Store, plain string) {
+	t.Helper()
+	rows, err := s.db.Query(`SELECT * FROM tokens`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	cols, _ := rows.Columns()
+	hash := hashOf(plain)
+	var seen, hashSeen bool
+	for rows.Next() {
+		raw := make([]sql.RawBytes, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range raw {
+			ptrs[i] = &raw[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatal(err)
+		}
+		seen = true
+		for _, v := range raw {
+			if bytes.Contains(v, []byte(plain)) {
+				t.Fatal("plaintext token stored in DB")
+			}
+			if bytes.Equal(v, hash) {
+				hashSeen = true
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !seen || !hashSeen {
+		t.Fatalf("scan not meaningful: rows=%v hash=%v", seen, hashSeen)
 	}
 }

@@ -17,7 +17,7 @@ func TestBans(t *testing.T) {
 	if ok, err := s.IsBanned(ctx, "user", "evil"); err != nil || !ok {
 		t.Fatalf("banned = %v %v", ok, err)
 	}
-	if ok, _ := s.IsBanned(ctx, "host", "evil"); ok {
+	if ok, err := s.IsBanned(ctx, "host", "evil"); err != nil || ok {
 		t.Fatal("host ban leaked from user ban")
 	}
 	list, err := s.Bans(ctx)
@@ -27,7 +27,26 @@ func TestBans(t *testing.T) {
 	if err := s.RemoveBan(ctx, "user", "evil"); err != nil {
 		t.Fatal(err)
 	}
-	if ok, _ := s.IsBanned(ctx, "user", "evil"); ok {
+	if ok, err := s.IsBanned(ctx, "user", "evil"); err != nil || ok {
 		t.Fatal("still banned")
+	}
+}
+
+func TestBansCaseInsensitive(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	for _, kind := range []string{"user", "host"} {
+		if err := s.AddBan(ctx, Ban{Kind: kind, Value: "MiXed"}); err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := s.IsBanned(ctx, kind, "mIxEd"); err != nil || !ok {
+			t.Fatalf("%s: banned = %v %v", kind, ok, err)
+		}
+		if err := s.RemoveBan(ctx, kind, "MIXED"); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := s.IsBanned(ctx, kind, "mixed"); ok {
+			t.Fatalf("%s still banned", kind)
+		}
 	}
 }

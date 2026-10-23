@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -38,6 +39,36 @@ func TestUpsertGitHubUser(t *testing.T) {
 	}
 }
 
+func TestUpsertRenamedLoginCollision(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	a := mkUser(t, s, 1, "foo")
+	// B signs up with A's old login before A logs in again.
+	b, created, err := s.UpsertGitHubUser(ctx, User{GitHubID: 2, Login: "Foo"})
+	if err != nil || !created || b.Login != "Foo" {
+		t.Fatalf("B: %+v %v %v", b, created, err)
+	}
+	got, err := s.UserByID(ctx, a.ID)
+	if err != nil || got.Login != fmt.Sprintf("foo~%d", a.ID) {
+		t.Fatalf("A login = %q %v", got.Login, err)
+	}
+	if _, _, err := s.UpsertGitHubUser(ctx, User{GitHubID: 1, Login: "bar"}); err != nil {
+		t.Fatalf("A rename: %v", err)
+	}
+	// B renames away, then A takes foo again (update branch collision).
+	if _, _, err := s.UpsertGitHubUser(ctx, User{GitHubID: 2, Login: "baz"}); err != nil {
+		t.Fatal(err)
+	}
+	a2, _, err := s.UpsertGitHubUser(ctx, User{GitHubID: 1, Login: "foo"})
+	if err != nil || a2.Login != "foo" {
+		t.Fatalf("A back: %+v %v", a2, err)
+	}
+	// C takes foo while A holds it: update-branch collision for an existing user.
+	if _, _, err := s.UpsertGitHubUser(ctx, User{GitHubID: 2, Login: "foo"}); err != nil {
+		t.Fatalf("B takes foo: %v", err)
+	}
+}
+
 func TestCountUsersExcludesWaitlisted(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
@@ -46,12 +77,14 @@ func TestCountUsersExcludesWaitlisted(t *testing.T) {
 	if err := s.SetWaitlisted(ctx, b.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := s.CountUsers(ctx, "free"); n != 2 {
-		t.Fatalf("free = %d", n)
+	if n, err := s.CountUsers(ctx, "free"); err != nil || n != 2 {
+		t.Fatalf("free = %d %v", n, err)
 	}
-	s.SetPlan(ctx, a.ID, "pro")
-	if n, _ := s.CountUsers(ctx, "free"); n != 1 {
-		t.Fatalf("free = %d", n)
+	if err := s.SetPlan(ctx, a.ID, "pro"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.CountUsers(ctx, "free"); err != nil || n != 1 {
+		t.Fatalf("free = %d %v", n, err)
 	}
 	if err := s.SetPlan(ctx, 999, "pro"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v", err)

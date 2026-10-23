@@ -42,6 +42,14 @@ func (s *Store) UpsertGitHubUser(ctx context.Context, u User) (User, bool, error
 	var out User
 	var created bool
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
+		// A login may have been renamed on GitHub without us noticing; free
+		// it up by renaming any other holder to a placeholder ('~' cannot
+		// appear in a GitHub login).
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET login = login || '~' || id WHERE lower(login) = lower(?) AND github_id <> ?`,
+			u.Login, u.GitHubID); err != nil {
+			return err
+		}
 		var id int64
 		err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE github_id = ?`, u.GitHubID).Scan(&id)
 		switch {
