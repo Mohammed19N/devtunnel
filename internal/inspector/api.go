@@ -32,6 +32,13 @@ func (in *Inspector) UI() http.Handler {
 		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
 		w.Write(indexHTML)
 	})
+	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
+		t, _ := in.target.Load().(string)
+		writeJSON(w, 200, struct {
+			PublicURL string `json:"public_url"`
+			Target    string `json:"target"`
+		}{in.base(), t})
+	})
 	mux.HandleFunc("GET /api/requests", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, in.store.List())
 	})

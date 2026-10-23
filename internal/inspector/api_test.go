@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -228,5 +229,43 @@ func TestAPIHardeningHeaders(t *testing.T) {
 		if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 			t.Fatalf("missing nosniff: %v", rec.Header())
 		}
+	}
+}
+
+func TestAPIStatus(t *testing.T) {
+	in := newTestInspector()
+	rec := do(in, "GET", "/api/status", "localhost:4040", "", "")
+	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"public_url":"","target":""}` {
+		t.Fatalf("status before = %d %q", rec.Code, rec.Body.String())
+	}
+	in.SetPublicURL("https://abc.passway.dev")
+	in.SetTarget("http://localhost:3000")
+	rec = do(in, "GET", "/api/status", "localhost:4040", "", "")
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type = %q", ct)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"public_url":"https://abc.passway.dev","target":"http://localhost:3000"}` {
+		t.Fatalf("status = %q", got)
+	}
+}
+
+func TestUIIndex(t *testing.T) {
+	in := newTestInspector()
+	rec := do(in, "GET", "/", "localhost:4040", "", "")
+	if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("index = %d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"<title>Passway Inspector</title>", "/api/events", "/replay", "/curl", "/api/status"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("index missing %q", want)
+		}
+	}
+	ext := regexp.MustCompile(`(?i)(src|href)\s*=\s*["']?\s*(https?:)?//`)
+	if m := ext.FindString(body); m != "" {
+		t.Errorf("index has external load: %q", m)
+	}
+	if strings.Contains(body, "@import") {
+		t.Error("index has @import")
 	}
 }

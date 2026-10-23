@@ -32,6 +32,7 @@ type Inspector struct {
 	store     *Store
 	handler   http.Handler
 	publicURL atomic.Value // string
+	target    atomic.Value // string
 }
 
 // New wraps next (the client's local proxy) with Capture. Handler() is what the tunnel serves.
@@ -48,6 +49,9 @@ func (in *Inspector) Store() *Store { return in.store }
 
 // SetPublicURL records the tunnel's public URL (used by cURL export).
 func (in *Inspector) SetPublicURL(u string) { in.publicURL.Store(u) }
+
+// SetTarget records the local address the tunnel forwards to (shown in the UI).
+func (in *Inspector) SetTarget(t string) { in.target.Store(t) }
 
 func (in *Inspector) base() string {
 	u, _ := in.publicURL.Load().(string)
