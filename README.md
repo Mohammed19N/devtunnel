@@ -75,13 +75,17 @@ response.
   (including headers such as `Stripe-Signature`). The replay appears as a new
   entry in the list.
 - **Edit & Replay** lets you change the method, path, headers or body first.
-  Edited bodies are sent as UTF-8 text.
+  Edited bodies are sent as UTF-8 text; an unedited body is resent byte for
+  byte.
 - **Copy as cURL** builds a `curl` command for the captured request against
   your public tunnel URL.
 
 The inspector keeps the last 500 requests in memory and stores at most 1 MB of
 each body (larger bodies are marked truncated, but are always forwarded in
-full). It listens on loopback only.
+full). A request whose body the inspector did not see to the end, for example
+because your app answered before reading it, is also marked truncated. A
+truncated body has to be edited before it can be replayed, and WebSocket
+connections cannot be replayed. The inspector listens on loopback only.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -107,11 +111,12 @@ passway-server --domain tunnels.example.com \
 | `--public-port` | `0` | Port shown in public URLs, if it differs from the listener (for example behind a proxy). |
 | `--rate-limit` | `0` | Maximum requests per minute for each tunnel. Over the limit, visitors get `429` with a `Retry-After` header. `0` means unlimited. |
 | `--max-conns-per-tunnel` | `64` | Maximum concurrent proxied connections per tunnel. |
-| `--browser-warning` | `false` | Show a one-time warning page to browsers (GET or HEAD requests that accept `text/html`) before they reach a tunnel. Webhook calls and other API traffic are not interrupted. Clients can skip it with a `Passway-Skip-Warning` header. |
+| `--browser-warning` | `false` | Show a one-time warning page to browser page loads (requests with `Sec-Fetch-Mode: navigate` or `Sec-Fetch-Dest: document`, or, without those headers, GET or HEAD requests that accept `text/html`) before they reach a tunnel. Webhook calls and other API traffic are not interrupted. Clients can skip it with a `Passway-Skip-Warning` header. Visitors who continue get a cookie signed by the server for that tunnel host, valid for 7 days or until the server restarts. |
 
 The server refuses requested subdomain names (`--name`) that contain blocked
 words, such as brand names and terms commonly used in phishing (`paypal`,
-`login`, `bank` and similar).
+`login`, `bank` and similar). Webhook senders are not blocked, so names like
+`stripe-hooks` or `github-webhooks` work.
 
 You need a wildcard DNS record (`*.tunnels.example.com`) and a wildcard
 certificate for the domain. Clients authenticate with `passway login <token>`
