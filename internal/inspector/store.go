@@ -69,6 +69,12 @@ func (e *Exchange) Summary() Summary {
 	}
 }
 
+// Event is a store change sent to subscribers: a new exchange, or Clear.
+type Event struct {
+	Clear   bool    // Clear was called; Summary is unset
+	Summary Summary // the exchange just added
+}
+
 // Store is a bounded in-memory ring of exchanges with change subscribers.
 // Exchanges must not be mutated after Add.
 type Store struct {
@@ -76,7 +82,7 @@ type Store struct {
 	cap  int
 	ring []*Exchange // oldest first
 	next int64
-	subs map[chan Summary]struct{}
+	subs map[chan Event]struct{}
 }
 
 // NewStore returns a Store holding at most capacity exchanges (<= 0 means DefaultCapacity).
@@ -84,7 +90,7 @@ func NewStore(capacity int) *Store {
 	if capacity <= 0 {
 		capacity = DefaultCapacity
 	}
-	return &Store{cap: capacity, subs: map[chan Summary]struct{}{}}
+	return &Store{cap: capacity, subs: map[chan Event]struct{}{}}
 }
 
 // Add assigns e.ID, stores e (evicting the oldest if full) and notifies subscribers
@@ -100,13 +106,7 @@ func (s *Store) Add(e *Exchange) int64 {
 		s.ring = s.ring[:len(s.ring)-1]
 	}
 	s.ring = append(s.ring, e)
-	sum := e.Summary()
-	for ch := range s.subs {
-		select {
-		case ch <- sum:
-		default:
-		}
-	}
+	s.notify(Event{Summary: e.Summary()})
 	return e.ID
 }
 
@@ -136,17 +136,28 @@ func (s *Store) List() []Summary {
 	return out
 }
 
-// Clear drops all held exchanges. IDs keep increasing.
+// Clear drops all held exchanges and notifies subscribers. IDs keep increasing.
 func (s *Store) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ring = nil
+	s.notify(Event{Clear: true})
 }
 
-// Subscribe returns a channel of new-exchange summaries (buffered 64; slow
-// subscribers drop events) and a cancel func that closes the channel.
-func (s *Store) Subscribe() (<-chan Summary, func()) {
-	ch := make(chan Summary, 64)
+// notify sends ev to every subscriber without blocking. Callers hold s.mu.
+func (s *Store) notify(ev Event) {
+	for ch := range s.subs {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
+}
+
+// Subscribe returns a channel of store events (buffered 64; slow subscribers
+// drop events) and a cancel func that closes the channel.
+func (s *Store) Subscribe() (<-chan Event, func()) {
+	ch := make(chan Event, 64)
 	s.mu.Lock()
 	s.subs[ch] = struct{}{}
 	s.mu.Unlock()

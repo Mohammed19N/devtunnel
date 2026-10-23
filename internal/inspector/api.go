@@ -1,6 +1,7 @@
 package inspector
 
 import (
+	"bytes"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -100,8 +101,8 @@ func (in *Inspector) handleReplay(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(strings.TrimSpace(string(raw))) > 0 {
 		edit = &Edit{}
-		if err := json.Unmarshal(raw, edit); err != nil {
-			http.Error(w, "bad edit: "+err.Error(), 400)
+		if err := decodeEdit(raw, edit); err != nil {
+			http.Error(w, fmt.Errorf("%w: %v", ErrBadEdit, err).Error(), 400)
 			return
 		}
 	}
@@ -109,7 +110,7 @@ func (in *Inspector) handleReplay(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		http.Error(w, err.Error(), 404)
-	case errors.Is(err, ErrTruncated):
+	case errors.Is(err, ErrTruncated), errors.Is(err, ErrUpgraded):
 		http.Error(w, err.Error(), 409)
 	case errors.Is(err, ErrBadEdit):
 		http.Error(w, err.Error(), 400)
@@ -120,6 +121,23 @@ func (in *Inspector) handleReplay(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// decodeEdit parses one JSON Edit object, rejecting unknown keys and trailing data.
+func decodeEdit(raw []byte, edit *Edit) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(edit); err != nil {
+		return err
+	}
+	if dec.Decode(&struct{}{}) != io.EOF {
+		return errors.New("unexpected data after the edit object")
+	}
+	return nil
+}
+
+// CloseStreams ends every open and future event stream, so http.Server.Shutdown
+// does not wait on them. Register it with RegisterOnShutdown.
+func (in *Inspector) CloseStreams() { in.closeStreams() }
+
 func (in *Inspector) handleEvents(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	ch, cancel := in.store.Subscribe()
@@ -128,7 +146,7 @@ func (in *Inspector) handleEvents(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Type", "text/event-stream")
 	h.Set("Cache-Control", "no-cache")
 	w.WriteHeader(200)
-	if rc.Flush() != nil {
+	if rc.Flush() != nil || in.streams.Err() != nil {
 		return
 	}
 	t := time.NewTicker(pingInterval)
@@ -137,11 +155,19 @@ func (in *Inspector) handleEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
 			return
-		case s, ok := <-ch:
+		case <-in.streams.Done():
+			return
+		case ev, ok := <-ch:
 			if !ok {
 				return
 			}
-			b, _ := json.Marshal(s)
+			if ev.Clear {
+				if _, err := io.WriteString(w, "event: clear\ndata: {}\n\n"); err != nil {
+					return
+				}
+				break
+			}
+			b, _ := json.Marshal(ev.Summary)
 			if _, err := fmt.Fprintf(w, "event: exchange\ndata: %s\n\n", b); err != nil {
 				return
 			}
@@ -162,7 +188,11 @@ func isLoopbackHost(hostport string) bool {
 		h = host
 	}
 	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
-	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
 }
 
 // guard blocks DNS-rebinding, cross-origin and form-based CSRF requests. It sets no CORS headers.

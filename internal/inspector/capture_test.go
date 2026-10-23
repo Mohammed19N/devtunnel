@@ -191,3 +191,32 @@ func TestCapturePanicRecords500AndRepanics(t *testing.T) {
 		t.Fatalf("exchange = %+v", e)
 	}
 }
+
+func TestCapturePanicMarksUnreadBodyTruncated(t *testing.T) {
+	s := NewStore(0)
+	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body.Read(make([]byte, 2))
+		panic("boom")
+	}))
+	func() {
+		defer func() { recover() }()
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/", strings.NewReader("0123456789")))
+	}()
+	e, _ := s.Get(1)
+	if b := e.Request.Body; !b.Truncated || string(b.Data) != "01" {
+		t.Fatalf("body = %+v, want the 2 bytes read, truncated", b)
+	}
+}
+
+func TestCaptureClosedUnreadBodyIsTruncated(t *testing.T) {
+	s := NewStore(0)
+	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body.Read(make([]byte, 4))
+		r.Body.Close()
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/", strings.NewReader("0123456789")))
+	e, _ := s.Get(1)
+	if b := e.Request.Body; !b.Truncated || string(b.Data) != "0123" || b.Size != 4 {
+		t.Fatalf("body = %+v, want the 4 bytes read, truncated", b)
+	}
+}

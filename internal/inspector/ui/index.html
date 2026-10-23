@@ -840,6 +840,7 @@ function connect() {
     S.hadOpen = true; backoff = 1000; setLive(true); loadList();
   };
   es.addEventListener('exchange', e => { try { onExchange(JSON.parse(e.data)); } catch {} });
+  es.addEventListener('clear', () => resetList()); // cleared here or in another tab
   es.onerror = () => {
     setLive(false);
     if (es.readyState === EventSource.CLOSED) {
@@ -948,8 +949,8 @@ function buildDetail(ex, animate) {
         el('span', { class: 'method-tag' }, req.method),
         el('span', { class: 'full-url' }, el('span', { class: 'base' }, base), uri)),
       el('div', { class: 'actions' },
-        el('button', { class: 'btn primary', title: 'Replay (R)', onclick: () => replay() }, icon('replay'), 'Replay'),
-        el('button', { class: 'btn', title: 'Edit & Replay (E)', onclick: () => openEditor() }, icon('edit'), el('span', null, 'Edit', el('span', { class: 'lbl-long' }, ' & Replay'))),
+        el('button', { class: 'btn primary', title: ex.upgraded ? NO_WS_REPLAY : 'Replay (R)', disabled: !!ex.upgraded, onclick: () => replay() }, icon('replay'), 'Replay'),
+        el('button', { class: 'btn', title: ex.upgraded ? NO_WS_REPLAY : 'Edit & Replay (E)', disabled: !!ex.upgraded, onclick: () => openEditor() }, icon('edit'), el('span', null, 'Edit', el('span', { class: 'lbl-long' }, ' & Replay'))),
         el('button', { class: 'btn', title: 'Copy as cURL (C)', onclick: () => copyCurl() }, icon('terminal'), 'Copy as cURL'))),
     el('div', { class: 'meta' },
       el('span', { class: 'pill ' + statusClass(st) }, st ? st + ' ' + (REASONS[st] || '') : 'No response'),
@@ -963,7 +964,7 @@ function buildDetail(ex, animate) {
       tabBtn('request', 'Request', el('span', { class: 'n' }, fmtBytes(req.body.size))),
       tabBtn('response', 'Response', el('span', { class: 'sdot ' + statusClass(st) }), el('span', { class: 'n' }, fmtBytes(res.body.size)))));
   const body = el('div', { class: 'd-body' + (animate ? ' fade' : '') });
-  if (S.editing) body.append(buildEditor(ex));
+  if (S.editing && !ex.upgraded) body.append(buildEditor(ex));
   else if (S.tab === 'request') body.append(...requestView(ex));
   else body.append(...responseView(ex));
   return [head, body];
@@ -1067,9 +1068,11 @@ async function postReplay(id, edit) {
   if (r.ok) return { ok: true, id: (await r.json()).id };
   return { ok: false, code: r.status, msg: (await r.text()).trim().replace(/^inspector: /, '') };
 }
+const NO_WS_REPLAY = 'WebSocket connections cannot be replayed';
+function isUpgraded(id) { const s = S.byId.get(id); return !!(s && s.upgraded); }
 let busy = false;
 async function replay() {
-  if (!S.sel || busy) return;
+  if (!S.sel || busy || isUpgraded(S.sel)) return;
   busy = true;
   try {
     const res = await postReplay(S.sel, null);
@@ -1088,7 +1091,7 @@ async function copyCurl() {
   } catch (e) { toast('Copy failed: ' + e.message, 'bad'); }
 }
 function openEditor() {
-  if (!S.sel) return;
+  if (!S.sel || isUpgraded(S.sel)) return;
   S.editing = true;
   S.tab = 'request';
   syncHash();
@@ -1101,18 +1104,26 @@ function buildEditor(ex) {
   const text = bytes.length ? decodeText(bytes, req.body.truncated) : '';
   const binary = text === null;
   const bodyInit = binary ? '' : text;
+  // A textarea turns CRLF into LF, so compare against the normalized original and
+  // restore CRLF on send when the original used it (e.g. multipart bodies).
+  const bodyNorm = bodyInit.replace(/\r\n?/g, '\n'), crlf = /\r\n/.test(bodyInit);
   const method = el('input', { class: 'field method', value: req.method, list: 'methods', 'aria-label': 'Method', spellcheck: 'false' });
   const uri = el('input', { class: 'field uri', value: req.uri, 'aria-label': 'Path', spellcheck: 'false' });
   const hdrs = el('textarea', { class: 'field', rows: Math.min(12, Math.max(4, hdrText.split('\n').length + 1)), spellcheck: 'false', 'aria-label': 'Headers' }, hdrText);
   const bodyTa = el('textarea', { class: 'field body', spellcheck: 'false', 'aria-label': 'Body',
     placeholder: !binary ? '' : req.body.truncated
-      ? 'The binary body was truncated and cannot be resent. Type a replacement, or leave empty to send no body.'
+      ? 'The binary body was truncated and cannot be resent. Type a replacement body to send.'
       : 'Binary body (' + bytes.length + ' bytes) is kept unless you type a replacement here' }, bodyInit);
   const err = el('div', { class: 'err' });
-  const send = el('button', { class: 'btn primary', onclick: () => submit() }, icon('replay'), 'Send', el('kbd', null, '⌘↵'));
+  const bodyEdited = () => bodyTa.value !== bodyNorm;
+  // A truncated body is never resent as captured: Send waits for a body edit.
+  const canSend = () => !req.body.truncated || bodyEdited();
+  const send = el('button', { class: 'btn primary', disabled: !canSend(), onclick: () => submit() }, icon('replay'), 'Send', el('kbd', null, '⌘↵'));
+  bodyTa.addEventListener('input', () => { send.disabled = !canSend(); });
   const cancel = el('button', { class: 'btn', onclick: closeEditor }, 'Cancel');
   async function submit() {
     err.textContent = '';
+    if (!canSend()) { err.textContent = 'Edit the truncated body before sending.'; bodyTa.focus(); return; }
     const edit = { method: method.value.trim().toUpperCase(), uri: uri.value.trim() };
     if (!edit.uri.startsWith('/') || edit.uri.startsWith('//')) { err.textContent = 'Path must start with a single "/".'; uri.focus(); return; }
     if (hdrs.value !== hdrText) {
@@ -1128,7 +1139,7 @@ function buildEditor(ex) {
       }
       edit.header = h;
     }
-    if (req.body.truncated || bodyTa.value !== bodyInit) edit.body = bodyTa.value;
+    if (bodyEdited()) edit.body = crlf ? bodyTa.value.replace(/\n/g, '\r\n') : bodyTa.value;
     send.disabled = true;
     try {
       const res = await postReplay(ex.id, edit);
@@ -1136,7 +1147,7 @@ function buildEditor(ex) {
       err.textContent = res.msg;
       toast(res.msg, 'bad');
     } catch (e) { err.textContent = e.message; }
-    finally { send.disabled = false; }
+    finally { send.disabled = !canSend(); }
   }
   const form = el('div', { class: 'editor', onkeydown: e => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
@@ -1151,13 +1162,16 @@ function buildEditor(ex) {
     el('datalist', { id: 'methods' }, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map(m => el('option', { value: m }))));
   return form;
 }
+function resetList() {
+  S.list = []; S.byId.clear(); S.rows.clear(); S.details.clear();
+  select(0);
+  renderList();
+}
 async function clearAll() {
   try {
     const r = await fetch('/api/requests', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     if (!r.ok) throw new Error((await r.text()).trim());
-    S.list = []; S.byId.clear(); S.rows.clear(); S.details.clear();
-    select(0);
-    renderList();
+    resetList();
     toast('Cleared');
   } catch (e) { toast('Clear failed: ' + e.message, 'bad'); }
 }

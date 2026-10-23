@@ -31,12 +31,21 @@ func TestStoreSubscribe(t *testing.T) {
 	ch, cancel := s.Subscribe()
 	id := s.Add(&Exchange{Request: Request{Method: "GET", URI: "/x"}})
 	select {
-	case sum := <-ch:
-		if sum.ID != id || sum.Method != "GET" || sum.URI != "/x" {
-			t.Fatalf("summary = %+v", sum)
+	case ev := <-ch:
+		if sum := ev.Summary; ev.Clear || sum.ID != id || sum.Method != "GET" || sum.URI != "/x" {
+			t.Fatalf("event = %+v", ev)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no summary")
+	}
+	s.Clear()
+	select {
+	case ev := <-ch:
+		if !ev.Clear {
+			t.Fatalf("event = %+v, want clear", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no clear event")
 	}
 	cancel()
 	if _, ok := <-ch; ok {

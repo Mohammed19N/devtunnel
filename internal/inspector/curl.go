@@ -20,7 +20,11 @@ func CurlCommand(e *Exchange, base string) string {
 	}
 	base = strings.TrimRight(base, "/")
 	var b strings.Builder
-	b.WriteString("curl -X " + shQuote(r.Method) + " " + shQuote(base+r.URI))
+	if r.Method == "HEAD" {
+		b.WriteString("curl --head " + shQuote(base+r.URI)) // -X HEAD waits for a body
+	} else {
+		b.WriteString("curl -X " + shQuote(r.Method) + " " + shQuote(base+r.URI))
+	}
 	keys := make([]string, 0, len(r.Header))
 	for k := range r.Header {
 		if curlSkip[k] || strings.HasPrefix(k, "X-Forwarded-") {

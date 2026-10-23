@@ -60,6 +60,12 @@ func TestAPIGuard(t *testing.T) {
 		{"ipv6", "GET", "/api/requests", "[::1]:4040", "", nil, 200},
 		{"ipv6 no port", "GET", "/api/requests", "[::1]", "", nil, 200},
 		{"loopback", "GET", "/api/requests", "127.0.0.1:4040", "", nil, 200},
+		{"loopback /8", "GET", "/api/requests", "127.0.0.2:4040", "", []string{"Origin", "http://127.0.0.2:4040"}, 200},
+		{"loopback /8 high", "GET", "/api/requests", "127.255.0.9:4040", "", nil, 200},
+		{"LOCALHOST", "GET", "/api/requests", "LocalHost:4040", "", nil, 200},
+		{"ipv6 long form", "GET", "/api/requests", "[0:0:0:0:0:0:0:1]:4040", "", nil, 200},
+		{"not loopback", "GET", "/api/requests", "128.0.0.1:4040", "", nil, 403},
+		{"unspecified", "GET", "/api/requests", "0.0.0.0:4040", "", nil, 403},
 	}
 	for _, c := range cases {
 		rec := do(in, c.method, c.path, c.host, c.ctype, "", c.hdr...)
@@ -108,11 +114,23 @@ func TestAPIListGetReplay(t *testing.T) {
 	if rec = do(in, "POST", "/api/requests/1/replay", h, "application/json", `{"uri":"x"}`); rec.Code != 400 {
 		t.Fatalf("bad edit = %d", rec.Code)
 	}
+	if rec = do(in, "POST", "/api/requests/1/replay", h, "application/json", `{"edit":{"body":"zz"}}`); rec.Code != 400 {
+		t.Fatalf("unknown field = %d %q", rec.Code, rec.Body.String())
+	}
+	if rec = do(in, "POST", "/api/requests/1/replay", h, "application/json", `{"body":"zz"} {}`); rec.Code != 400 {
+		t.Fatalf("trailing data = %d %q", rec.Code, rec.Body.String())
+	}
 	if rec = do(in, "POST", "/api/requests/1/replay", h, "application/json", `{not json`); rec.Code != 400 {
 		t.Fatalf("bad json = %d", rec.Code)
 	}
 	if rec = do(in, "POST", "/api/requests/99/replay", h, "application/json", ""); rec.Code != 404 {
 		t.Fatalf("replay missing = %d", rec.Code)
+	}
+
+	ws := newTestInspector()
+	ws.Store().Add(&Exchange{Request: Request{Method: "GET", URI: "/ws"}, Upgraded: true})
+	if rec = do(ws, "POST", "/api/requests/1/replay", h, "application/json", ""); rec.Code != 409 || !strings.Contains(rec.Body.String(), "WebSocket") {
+		t.Fatalf("upgraded = %d %q", rec.Code, rec.Body.String())
 	}
 
 	big := newTestInspector()
@@ -284,5 +302,76 @@ func TestUIStatusBarNeverAppendsNull(t *testing.T) {
 	}
 	if call := string(indexHTML)[i : i+end]; regexp.MustCompile(`:\s*null\s*,`).MatchString(call) {
 		t.Fatalf("t.append(...) argument can be null:\n%s", call)
+	}
+}
+
+// readEvents streams the SSE lines of resp into a channel.
+func readEvents(resp *http.Response) <-chan string {
+	lines := make(chan string, 16)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+		close(lines)
+	}()
+	return lines
+}
+
+func TestAPIEventsClear(t *testing.T) {
+	in := newTestInspector()
+	srv := httptest.NewServer(in.UI())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	lines := readEvents(resp)
+	in.Store().Clear()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case l := <-lines:
+			if l == "event: clear" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no clear event")
+		}
+	}
+}
+
+func TestAPIEventsEndOnCloseStreams(t *testing.T) {
+	in := newTestInspector()
+	srv := httptest.NewServer(in.UI())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	lines := readEvents(resp)
+	in.CloseStreams()
+	select {
+	case _, ok := <-lines:
+		for ok {
+			_, ok = <-lines
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("event stream still open after CloseStreams")
+	}
+	// New streams after CloseStreams end at once too.
+	r2, err := http.Get(srv.URL + "/api/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r2.Body.Close()
+	done := make(chan struct{})
+	go func() { io.Copy(io.Discard, r2.Body); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("new event stream not ended")
 	}
 }

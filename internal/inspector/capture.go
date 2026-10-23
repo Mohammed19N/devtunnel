@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -51,20 +52,80 @@ func (c *capBuffer) body() Body {
 	return Body{Data: c.data, Size: c.size, Truncated: c.cut || c.size > int64(len(c.data))}
 }
 
+// capReader tees a request body into buf. mu serializes Read, Close and finish:
+// a reverse proxy's transport can keep reading the body (and then close it) after
+// the handler has returned, e.g. when the app answers before reading it.
 type capReader struct {
-	rc  io.ReadCloser
-	buf *capBuffer
+	mu     sync.Mutex
+	rc     io.ReadCloser
+	buf    capBuffer
+	sawEOF bool // the body was read to its end
+	closed bool // Close was called; nothing more can be read
+	done   bool // finish took the record; later reads pass through uncaptured
 }
 
 func (r *capReader) Read(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return 0, http.ErrBodyReadAfterClose
+	}
 	n, err := r.rc.Read(p)
-	if n > 0 {
+	if n > 0 && !r.done {
 		r.buf.add(p[:n])
+	}
+	if err == io.EOF {
+		r.sawEOF = true
 	}
 	return n, err
 }
 
-func (r *capReader) Close() error { return r.rc.Close() }
+func (r *capReader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+	return r.rc.Close()
+}
+
+// finish optionally drains the unread body, then returns the record. The body
+// is complete only if EOF was actually seen; otherwise it is marked truncated.
+func (r *capReader) finish(drain bool) Body {
+	if drain {
+		r.drain()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.done = true
+	b := r.buf.body()
+	b.Truncated = b.Truncated || !r.sawEOF
+	return b
+}
+
+// drain reads what next left of the body, up to maxDrain total bytes seen. If
+// body remains past that, the record is marked truncated. It does nothing once
+// the body hit EOF or was closed (whoever closed it stopped reading).
+func (r *capReader) drain() {
+	r.mu.Lock()
+	skip, room := r.closed || r.sawEOF, maxDrain-r.buf.size
+	r.mu.Unlock()
+	if skip {
+		return
+	}
+	if room > 0 {
+		if _, err := io.CopyN(io.Discard, r, room); err != nil {
+			return // EOF (complete) or read error (truncated)
+		}
+	}
+	var one [1]byte
+	if n, _ := r.Read(one[:]); n > 0 {
+		r.mu.Lock()
+		r.buf.cut = true
+		r.mu.Unlock()
+	}
+}
 
 type capWriter struct {
 	http.ResponseWriter
@@ -128,7 +189,8 @@ const maxDrain = 8 << 20
 // so Flush/Hijack reach the real writer. A hijack sets Upgraded=true and Status 101. The
 // exchange is added when next returns. The context value set by WithReplayOf is copied
 // into ReplayOf. Request metadata is snapshotted before next runs, and any request body
-// next left unread is drained (up to maxDrain bytes) so the record is complete.
+// next left unread is drained (up to maxDrain bytes) so the record is complete; a
+// request body not read to EOF is marked truncated.
 func Capture(s *Store, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -140,17 +202,16 @@ func Capture(s *Store, next http.Handler) http.Handler {
 			Header: r.Header.Clone(),
 		}
 		ri := replayInfoFrom(r.Context())
-		var reqBuf capBuffer
 		var reader *capReader
 		if r.Body != nil && r.Body != http.NoBody {
-			reader = &capReader{rc: r.Body, buf: &reqBuf}
+			reader = &capReader{rc: r.Body}
 			r.Body = reader
 		}
 		cw := &capWriter{ResponseWriter: w}
 
 		record := func(panicked bool) {
-			if reader != nil && !panicked && !cw.upgraded {
-				drainBody(reader, &reqBuf)
+			if reader != nil {
+				req.Body = reader.finish(!panicked && !cw.upgraded)
 			}
 			status := cw.status
 			if status == 0 {
@@ -163,7 +224,6 @@ func Capture(s *Store, next http.Handler) http.Handler {
 			if hdr == nil {
 				hdr = w.Header().Clone()
 			}
-			req.Body = reqBuf.body()
 			e := &Exchange{
 				Start:    start,
 				Duration: time.Since(start),
@@ -189,18 +249,4 @@ func Capture(s *Store, next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(cw, r)
 	})
-}
-
-// drainBody reads what next left of the request body into buf, up to maxDrain total
-// bytes seen. If body remains past that, the record is marked truncated.
-func drainBody(r *capReader, buf *capBuffer) {
-	if room := maxDrain - buf.size; room > 0 {
-		if _, err := io.CopyN(io.Discard, r, room); err != nil {
-			return // EOF (complete) or read error
-		}
-	}
-	var one [1]byte
-	if n, _ := r.Read(one[:]); n > 0 {
-		buf.cut = true
-	}
 }

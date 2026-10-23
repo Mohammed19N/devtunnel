@@ -40,3 +40,11 @@ func TestCurlMultiValueHeader(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 }
+
+func TestCurlHead(t *testing.T) {
+	e := &Exchange{Request: Request{Method: "HEAD", URI: "/x", Host: "h"}}
+	want := `curl --head 'http://h/x'`
+	if got := CurlCommand(e, ""); got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
+	}
+}

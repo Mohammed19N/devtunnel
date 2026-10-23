@@ -128,3 +128,14 @@ func TestReplayEditHeaderCanonicalized(t *testing.T) {
 		t.Fatalf("headers = %v", got)
 	}
 }
+
+func TestReplayUpgraded(t *testing.T) {
+	in := New(0, http.NotFoundHandler())
+	in.Store().Add(&Exchange{Request: Request{Method: "GET", URI: "/ws"}, Upgraded: true})
+	if _, err := in.Replay(context.Background(), 1, nil); !errors.Is(err, ErrUpgraded) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := in.Replay(context.Background(), 1, &Edit{Body: ptr("x")}); !errors.Is(err, ErrUpgraded) {
+		t.Fatalf("edited: err = %v", err)
+	}
+}

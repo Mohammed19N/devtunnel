@@ -23,6 +23,7 @@ type Edit struct {
 var (
 	ErrTruncated = errors.New("inspector: captured body was truncated; edit the body to replay")
 	ErrNotFound  = errors.New("inspector: no such request")
+	ErrUpgraded  = errors.New("inspector: upgraded (WebSocket) connections cannot be replayed")
 	// ErrBadEdit wraps problems with an Edit (bad method or URI).
 	ErrBadEdit = errors.New("inspector: invalid edit")
 )
@@ -33,12 +34,16 @@ type Inspector struct {
 	handler   http.Handler
 	publicURL atomic.Value // string
 	target    atomic.Value // string
+
+	streams      context.Context // cancelled by CloseStreams
+	closeStreams context.CancelFunc
 }
 
 // New wraps next (the client's local proxy) with Capture. Handler() is what the tunnel serves.
 func New(capacity int, next http.Handler) *Inspector {
 	s := NewStore(capacity)
-	return &Inspector{store: s, handler: Capture(s, next)}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Inspector{store: s, handler: Capture(s, next), streams: ctx, closeStreams: cancel}
 }
 
 // Handler is the capturing handler the tunnel should serve.
@@ -71,6 +76,9 @@ func (in *Inspector) Replay(ctx context.Context, id int64, edit *Edit) (int64, e
 	orig, ok := in.store.Get(id)
 	if !ok {
 		return 0, ErrNotFound
+	}
+	if orig.Upgraded {
+		return 0, ErrUpgraded
 	}
 	r := orig.Request
 	if edit == nil {
