@@ -32,6 +32,8 @@ type Config struct {
 
 	Directory        Directory // cloud account directory; nil = self-hosted
 	FreeBandwidthCap int64     // bytes per month across all Free accounts; 0 = 500<<30 when Directory != nil
+
+	Dashboard http.Handler // serves base-domain paths other than /healthz and the tunnel path; nil = 404
 }
 
 // Server is the Passway tunnel server.
@@ -152,6 +154,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case protocol.TunnelPath:
 		s.handleControl(w, r)
 	default:
+		if s.cfg.Dashboard != nil {
+			s.cfg.Dashboard.ServeHTTP(w, r)
+			return
+		}
 		http.NotFound(w, r)
 	}
 }

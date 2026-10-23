@@ -1,0 +1,6 @@
+{{define "error"}}{{template "head" .}}
+<div class="icon warn"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 16.5h.01"/></svg></div>
+<h1>{{.Title}}</h1>
+<p>{{.Message}}</p>
+<a class="btn" href="/">Back to Passway</a>
+{{template "foot" .}}{{end}}

@@ -1,0 +1,5 @@
+{{define "waitlist"}}{{template "head" .}}
+<div class="icon"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 2h6"/></svg></div>
+<h1>You're on the waitlist</h1>
+<p>Passway's free tier is full right now. Your spot is saved as <strong>@{{.User.Login}}</strong>, and you'll get access as soon as there's room.</p>
+{{template "foot" .}}{{end}}
