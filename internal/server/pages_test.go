@@ -87,3 +87,17 @@ func TestRenderPageWarningLink(t *testing.T) {
 		t.Fatalf("missing %s in %s", want, w.Body.String())
 	}
 }
+
+func TestRenderPageHardeningHeaders(t *testing.T) {
+	for _, kind := range []pageKind{pageOffline, pageRateLimited, pageWarning} {
+		for _, accept := range []string{"text/html", "application/json"} {
+			w := httptest.NewRecorder()
+			renderPage(w, pageReq(accept), kind, pageData{Host: "a.x.dev", Continue: "/_passway/continue?to=%2F", RetryIn: 1})
+			h := w.Header()
+			if h.Get("X-Content-Type-Options") != "nosniff" || h.Get("X-Frame-Options") != "DENY" ||
+				!strings.Contains(h.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
+				t.Errorf("kind %d accept %q: headers = %v", kind, accept, h)
+			}
+		}
+	}
+}

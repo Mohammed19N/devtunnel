@@ -27,12 +27,25 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	err := run(ctx, os.Args[1:], os.Stderr, nil)
 	stop()
-	if err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			os.Exit(0)
-		}
+	if err != nil && !errors.Is(err, flag.ErrHelp) {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
+	}
+	os.Exit(exitCode(err))
+}
+
+// usageError is a bad flag value; it exits with status 2.
+type usageError struct{ error }
+
+// exitCode maps run's error to the process exit status.
+func exitCode(err error) int {
+	var ue usageError
+	switch {
+	case err == nil, errors.Is(err, flag.ErrHelp):
+		return 0
+	case errors.As(err, &ue):
+		return 2
+	default:
+		return 1
 	}
 }
 
@@ -54,10 +67,19 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	browserWarning := fs.Bool("browser-warning", false, "show a one-time warning page to browser visitors of tunnels")
 	rateLimit := fs.Int("rate-limit", 0, "max requests per minute per tunnel (0 = unlimited)")
 	if err := fs.Parse(args); err != nil {
-		return err
+		if errors.Is(err, flag.ErrHelp) {
+			return err
+		}
+		return usageError{err}
 	}
 	if *domain == "" {
 		return errors.New("--domain is required")
+	}
+	if *maxConns < 0 {
+		return usageError{fmt.Errorf("--max-conns-per-tunnel must be >= 0, got %d", *maxConns)}
+	}
+	if *rateLimit < 0 {
+		return usageError{fmt.Errorf("--rate-limit must be >= 0, got %d", *rateLimit)}
 	}
 	if strings.TrimSpace(*tokens) == "" && !*open && *domain != "localhost" && !strings.HasSuffix(*domain, ".localhost") {
 		return fmt.Errorf("refusing to run an open relay on %s: set --tokens or pass --open", *domain)

@@ -8,6 +8,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
+	"flag"
 	"io"
 	"math/big"
 	"net/http"
@@ -29,6 +31,26 @@ func TestRunTLSWithoutCert(t *testing.T) {
 	err := run(context.Background(), []string{"--domain", "localhost", "--tls-addr", ":0"}, io.Discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "--tls-cert") {
 		t.Fatalf("err = %v, want mention of --tls-cert", err)
+	}
+}
+
+func TestRunRejectsNegativeLimits(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // if validation passes, run returns at once instead of serving
+	for _, name := range []string{"--rate-limit", "--max-conns-per-tunnel"} {
+		err := run(ctx, []string{"--domain", "localhost", "--addr", "127.0.0.1:0", name, "-1"}, io.Discard, nil)
+		if err == nil || !strings.Contains(err.Error(), name) || exitCode(err) != 2 {
+			t.Errorf("%s -1: err = %v, exit %d; want usage error mentioning the flag, exit 2", name, err, exitCode(err))
+		}
+	}
+	if err := run(ctx, []string{"--rate-limit", "x"}, io.Discard, nil); exitCode(err) != 2 {
+		t.Errorf("bad flag value: err = %v, exit %d, want 2", err, exitCode(err))
+	}
+	if c := exitCode(errors.New("listen failed")); c != 1 {
+		t.Errorf("runtime error exit = %d, want 1", c)
+	}
+	if c := exitCode(flag.ErrHelp); c != 0 {
+		t.Errorf("help exit = %d, want 0", c)
 	}
 }
 

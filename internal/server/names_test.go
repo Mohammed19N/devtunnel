@@ -37,8 +37,10 @@ func TestValidateNameBlocklist(t *testing.T) {
 			wantCode(t, err, protocol.CodeInvalidName)
 		}
 	}
-	if err := ValidateName("happy-otter-12"); err != nil {
-		t.Fatal(err)
+	for _, n := range []string{"happy-otter-12", "stripe-hooks", "github-webhooks", "shopify-dev", "twilio-sms", "slack-events"} {
+		if err := ValidateName(n); err != nil {
+			t.Errorf("%q rejected: %v", n, err)
+		}
 	}
 }
 

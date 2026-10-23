@@ -64,6 +64,12 @@ func newTunnelProxy(t *Tunnel, maxConns int, log *slog.Logger) {
 			pr.SetURL(&url.URL{Scheme: "http", Host: t.Name})
 			pr.Out.Host = pr.In.Host
 			pr.SetXForwarded()
+			stripWarnCookie(pr.Out.Header)
+		},
+		// The app must not be able to set the edge's warned cookie.
+		ModifyResponse: func(resp *http.Response) error {
+			dropWarnSetCookie(resp.Header)
+			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if !errors.Is(err, context.Canceled) {
@@ -86,7 +92,7 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 			http.NotFound(w, r)
 			return
 		}
-		handleContinue(w, r)
+		handleContinue(w, r, s.cfg.CookieSecret, s.cfg.PublicScheme == "https")
 		return
 	}
 	t, ok := s.registry.Lookup(label)
@@ -94,7 +100,7 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 		renderPage(w, r, pageOffline, pageData{Host: r.Host})
 		return
 	}
-	if s.cfg.BrowserWarning && needsWarning(r) {
+	if s.cfg.BrowserWarning && needsWarning(r, s.cfg.CookieSecret) {
 		renderPage(w, r, pageWarning, pageData{Host: r.Host, Continue: continuePath + "?to=" + url.QueryEscape(r.URL.RequestURI())})
 		return
 	}

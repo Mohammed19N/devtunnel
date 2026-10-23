@@ -34,8 +34,9 @@ func ValidateName(name string) error {
 }
 
 // blockedWords are substrings that make a subdomain unavailable (phishing /
-// brand-impersonation abuse).
-var blockedWords = []string{"paypal", "login", "signin", "logon", "bank", "secure", "verify", "wallet", "password", "apple", "google", "microsoft", "office365", "outlook", "amazon", "facebook", "instagram", "whatsapp", "netflix", "coinbase", "binance", "metamask", "stripe", "github"}
+// brand-impersonation abuse). Webhook senders (Stripe, GitHub, ...) are left
+// out on purpose: "stripe-hooks" is exactly the name users pick.
+var blockedWords = []string{"paypal", "login", "signin", "logon", "bank", "secure", "verify", "wallet", "password", "apple", "google", "microsoft", "office365", "outlook", "amazon", "facebook", "instagram", "whatsapp", "netflix", "coinbase", "binance", "metamask"}
 
 // blockedWord returns the first blocked word contained in name, or "".
 func blockedWord(name string) string {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/rand"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,9 +21,10 @@ type Config struct {
 	NameHold     time.Duration // 0 = 2 * time.Minute
 	Logger       *slog.Logger  // nil = slog.Default()
 
-	MaxConnsPerTunnel int  // concurrent proxied connections per tunnel; 0 = 64
-	RateLimit         int  // requests per minute per tunnel; 0 = unlimited
-	BrowserWarning    bool // show a one-time interstitial to browser navigations
+	MaxConnsPerTunnel int    // concurrent proxied connections per tunnel; 0 = 64
+	RateLimit         int    // requests per minute per tunnel; 0 = unlimited
+	BrowserWarning    bool   // show a one-time interstitial to browser navigations
+	CookieSecret      []byte // HMAC key for the warned cookie; empty = 32 random bytes per start
 }
 
 // Server is the Passway tunnel server.
@@ -44,6 +46,10 @@ func New(cfg Config) *Server {
 	}
 	if cfg.MaxConnsPerTunnel == 0 {
 		cfg.MaxConnsPerTunnel = 64
+	}
+	if len(cfg.CookieSecret) == 0 {
+		cfg.CookieSecret = make([]byte, 32)
+		_, _ = rand.Read(cfg.CookieSecret) // crypto/rand.Read never fails
 	}
 	if cfg.Auth == nil {
 		cfg.Auth = StaticTokens(nil)

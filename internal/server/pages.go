@@ -30,7 +30,7 @@ type pageData struct {
 }
 
 // renderPage writes the edge page for kind with its status, Cache-Control:
-// no-store, and HTML when r accepts it, otherwise a one-line text body.
+// no-store, anti-framing and nosniff headers, and HTML when r accepts it, otherwise a one-line text body.
 func renderPage(w http.ResponseWriter, r *http.Request, kind pageKind, d pageData) {
 	var (
 		status int
@@ -51,6 +51,9 @@ func renderPage(w http.ResponseWriter, r *http.Request, kind pageKind, d pageDat
 	}
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Content-Security-Policy", "frame-ancestors 'none'")
 	if !strings.Contains(r.Header.Get("Accept"), "text/html") {
 		h.Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(status)
