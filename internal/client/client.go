@@ -161,8 +161,12 @@ func (c *runner) once(ctx context.Context) (connected bool, err error) {
 	ws, resp, err := websocket.Dial(dialCtx, c.wsURL, opts)
 	dialCancel()
 	if err != nil {
-		if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols && !c.connectedOnce {
-			return false, fmt.Errorf("%w (HTTP %d from %s)", ErrNotPassway, resp.StatusCode, c.cfg.Server)
+		if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols {
+			// 5xx and 429 (e.g. a reverse proxy while the server restarts) stay retryable.
+			if !c.connectedOnce && resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+				return false, fmt.Errorf("%w (HTTP %d from %s)", ErrNotPassway, resp.StatusCode, c.cfg.Server)
+			}
+			return false, fmt.Errorf("dial: HTTP %d from %s: %w", resp.StatusCode, c.cfg.Server, err)
 		}
 		return false, fmt.Errorf("dial: %w", err)
 	}

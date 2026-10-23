@@ -146,14 +146,34 @@ func TestRunHTTPForwards(t *testing.T) {
 }
 
 func TestRunHTTPFlagsAfterTarget(t *testing.T) {
-	var out, errb bytes.Buffer
-	if code := run(context.Background(), []string{"http", "3000", "--host-header", "bogus"}, &out, &errb, cfgPath(t)); code != 2 || !strings.Contains(errb.String(), "host-header must be") {
-		t.Fatalf("code=%d stderr=%q, want 2 from the bad flag value", code, errb.String())
-	}
-	errb.Reset()
-	if code := run(context.Background(), []string{"http", "3000", "extra"}, &out, &errb, cfgPath(t)); code != 2 || !strings.Contains(errb.String(), "usage") {
-		t.Fatalf("code=%d stderr=%q, want usage error", code, errb.String())
-	}
+	t.Run("errors", func(t *testing.T) {
+		var out, errb bytes.Buffer
+		if code := run(context.Background(), []string{"http", "3000", "--host-header", "bogus"}, &out, &errb, cfgPath(t)); code != 2 || !strings.Contains(errb.String(), "host-header must be") {
+			t.Fatalf("code=%d stderr=%q, want 2 from the bad flag value", code, errb.String())
+		}
+		errb.Reset()
+		if code := run(context.Background(), []string{"http", "3000", "extra"}, &out, &errb, cfgPath(t)); code != 2 || !strings.Contains(errb.String(), "usage") {
+			t.Fatalf("code=%d stderr=%q, want usage error", code, errb.String())
+		}
+	})
+	t.Run("name applied", func(t *testing.T) {
+		su, _ := startTunnelEnv(t, nil)
+		local := startLocal(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		var out, errb syncBuf
+		codeCh := make(chan int, 1)
+		cp := cfgPath(t)
+		go func() {
+			codeCh <- run(ctx, []string{"http", local.URL, "--name", "flagname", "--server", su, "--inspect=false"}, &out, &errb, cp)
+		}()
+		waitFor(t, "Forwarding", func() bool { return strings.Contains(out.String(), "Forwarding") })
+		m := regexp.MustCompile(`Forwarding\s+(\S+) ->`).FindStringSubmatch(out.String())
+		if m == nil || !strings.Contains(m[1], "flagname") {
+			t.Fatalf("output %q, want URL containing flagname", out.String())
+		}
+		stopRun(t, cancel, codeCh, &errb)
+	})
 }
 
 // startTunnelEnv starts a Passway server and a local target, returning the
@@ -302,23 +322,4 @@ func TestRunHTTPTokenPrecedence(t *testing.T) {
 			stopRun(t, cancel, codeCh, &errb)
 		})
 	}
-}
-
-func TestRunHTTPFlagsAfterTargetUsed(t *testing.T) {
-	su, _ := startTunnelEnv(t, nil)
-	local := startLocal(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	var out, errb syncBuf
-	codeCh := make(chan int, 1)
-	cp := cfgPath(t)
-	go func() {
-		codeCh <- run(ctx, []string{"http", local.URL, "--name", "flagname", "--server", su, "--inspect=false"}, &out, &errb, cp)
-	}()
-	waitFor(t, "Forwarding", func() bool { return strings.Contains(out.String(), "Forwarding") })
-	m := regexp.MustCompile(`Forwarding\s+(\S+) ->`).FindStringSubmatch(out.String())
-	if m == nil || !strings.Contains(m[1], "flagname") {
-		t.Fatalf("output %q, want URL containing flagname", out.String())
-	}
-	stopRun(t, cancel, codeCh, &errb)
 }

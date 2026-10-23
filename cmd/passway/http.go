@@ -9,8 +9,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/mohammed19n/passway/internal/client"
@@ -27,7 +27,7 @@ func checkLoopbackAddr(addr string) error {
 	if err != nil {
 		return fmt.Errorf("invalid --inspect-addr %q: %w", addr, err)
 	}
-	if host != "localhost" {
+	if !strings.EqualFold(host, "localhost") {
 		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
 			return fmt.Errorf("inspector must listen on a loopback address, got %q", addr)
 		}
@@ -42,15 +42,16 @@ func listenInspector(addr string) (net.Listener, error) {
 		return nil, err
 	}
 	ln, err := net.Listen("tcp", addr)
-	if err == nil || addr != defaultInspectAddr || !errors.Is(err, syscall.EADDRINUSE) {
+	if err == nil || addr != defaultInspectAddr {
 		return ln, err
 	}
+	// Any bind error (EADDRINUSE differs per OS) falls back to the next ports.
 	for port := 4041; port <= 4049; port++ {
-		if ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port)); err == nil {
+		if ln, e := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port)); e == nil {
 			return ln, nil
 		}
 	}
-	return nil, fmt.Errorf("inspector: %s and 127.0.0.1:4041-4049 are all in use (use --inspect-addr)", addr)
+	return nil, fmt.Errorf("inspector: could not bind 127.0.0.1:4040-4049 (use --inspect-addr): %w", err)
 }
 
 func runHTTP(ctx context.Context, args []string, stdout, stderr io.Writer, configPath string) int {

@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,13 +173,15 @@ func TestRunNotPasswayServer(t *testing.T) {
 }
 
 func TestRunCustomHandler(t *testing.T) {
-	srv, su := newTestServer(t, nil)
+	_, su := newTestServer(t, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ready := make(chan protocol.Ready, 1)
 	cfg := testConfig(su)
 	cfg.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "custom") })
 	cfg.OnReady = func(r protocol.Ready) { ready <- r }
+	logged := make(chan RequestLog, 1)
+	cfg.OnRequest = func(l RequestLog) { logged <- l }
 	done := runAsync(ctx, cfg)
 	var r protocol.Ready
 	select {
@@ -196,7 +200,130 @@ func TestRunCustomHandler(t *testing.T) {
 	if string(b) != "custom" {
 		t.Fatalf("body = %q", b)
 	}
-	_ = srv
+	select {
+	case l := <-logged:
+		if l.Status != 200 || l.Path != "/" {
+			t.Fatalf("log = %+v", l)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnRequest not called with custom handler")
+	}
 	cancel()
-	<-done
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+}
+
+// retryableStatuses: 5xx/429 on the first dial must not be fatal.
+func TestRunRetryableDialStatus(t *testing.T) {
+	for _, code := range []int{502, 503, 429} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			var hits atomic.Int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				w.WriteHeader(code)
+			}))
+			defer ts.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := runAsync(ctx, testConfig(ts.URL))
+			deadline := time.Now().Add(5 * time.Second)
+			for hits.Load() < 2 && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if hits.Load() < 2 {
+				t.Fatal("Run did not retry")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Run = %v, want nil", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Run did not return")
+			}
+		})
+	}
+}
+
+// trackListener records accepted conns so a test can sever them.
+type trackListener struct {
+	net.Listener
+	mu    sync.Mutex
+	conns []net.Conn
+}
+
+func (l *trackListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err == nil {
+		l.mu.Lock()
+		l.conns = append(l.conns, c)
+		l.mu.Unlock()
+	}
+	return c, err
+}
+
+func (l *trackListener) closeAll() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, c := range l.conns {
+		c.Close()
+	}
+}
+
+// A non-101 response after a successful connect is not ErrNotPassway.
+func TestRunNon101AfterConnectIsRetried(t *testing.T) {
+	ts := httptest.NewUnstartedServer(nil)
+	tl := &trackListener{Listener: ts.Listener}
+	ts.Listener = tl
+	port := ts.Listener.Addr().(*net.TCPAddr).Port
+	srv := server.New(server.Config{
+		Domain: "localhost", PublicScheme: "http", PublicPort: port,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	var broken atomic.Bool
+	var rejected atomic.Int32
+	ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if broken.Load() {
+			rejected.Add(1)
+			http.NotFound(w, r)
+			return
+		}
+		srv.ServeHTTP(w, r)
+	})
+	ts.Start()
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan protocol.Ready, 1)
+	cfg := testConfig("http://localhost:" + strconv.Itoa(port))
+	cfg.OnReady = func(r protocol.Ready) { ready <- r }
+	done := runAsync(ctx, cfg)
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no ready")
+	}
+	broken.Store(true)
+	tl.closeAll()
+	deadline := time.Now().Add(5 * time.Second)
+	for rejected.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if rejected.Load() < 2 {
+		t.Fatal("client did not keep retrying after 404")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
 }
