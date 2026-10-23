@@ -25,3 +25,30 @@ code{font:.88em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:
 footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--line);font-size:.8rem;color:var(--muted)}
 footer a{color:inherit;text-decoration:underline;text-underline-offset:2px}
 @media (max-width:480px){main{padding:28px 22px 22px;border-radius:16px}h1{font-size:1.4rem}}
+main.wide{max-width:46rem;text-align:left}
+main.wide h1{margin-bottom:20px}
+h2{margin:0 0 8px;font-size:1.05rem;font-weight:650}
+section{margin:0 0 26px}
+pre{margin:0 0 14px;padding:12px 14px;background:var(--code);border-radius:10px;overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+pre code{padding:0;background:none}
+.scroll{overflow-x:auto;margin-bottom:14px}
+table{width:100%;border-collapse:collapse;font-size:.9rem}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;overflow-wrap:anywhere}
+th{color:var(--muted);font-weight:600}
+td form{margin:0}
+progress{display:block;width:100%;height:10px;margin:0 0 14px;accent-color:var(--accent)}
+.btn[disabled]{opacity:.5;cursor:not-allowed;box-shadow:none}
+.btn[disabled]:hover{filter:none}
+button.btn{border:0;font:inherit;font-weight:600;cursor:pointer}
+.list{list-style:none;margin:0 0 14px;padding:0}
+.list li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.list form{margin:0}
+.tag{font-size:.75rem;padding:2px 8px;border-radius:99px;background:var(--accent-soft);color:var(--accent)}
+.row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:0 0 14px}
+.row label{flex-basis:100%;font-weight:600;font-size:.9rem}
+.row input[name]:not([type=hidden]){flex:1 1 12rem;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--fg);font:inherit}
+.row .btn{margin:0;padding:10px 20px}
+.error{color:var(--warn);background:var(--warn-soft);padding:10px 12px;border-radius:10px}
+.notice{border:1px solid var(--accent);border-radius:12px;padding:14px 16px 2px;margin-bottom:20px}
+a{color:var(--accent)}
+.btn{color:var(--accent-fg)}

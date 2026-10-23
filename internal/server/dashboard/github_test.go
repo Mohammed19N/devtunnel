@@ -96,11 +96,13 @@ type testEnv struct {
 	st     *store.Store
 	gh     *fakeGitHub
 	prefix string // "__Host-" on https
+	dbPath string
 }
 
 func newTestEnv(t *testing.T, mod func(*Config)) *testEnv {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "p.db"))
+	dbPath := filepath.Join(t.TempDir(), "p.db")
+	st, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +126,7 @@ func newTestEnv(t *testing.T, mod func(*Config)) *testEnv {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := &testEnv{d: d, st: st, gh: gh}
+	e := &testEnv{d: d, st: st, gh: gh, dbPath: dbPath}
 	if strings.HasPrefix(cfg.BaseURL, "https:") {
 		e.prefix = "__Host-"
 	}

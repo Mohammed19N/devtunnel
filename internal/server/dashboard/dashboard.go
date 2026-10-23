@@ -91,6 +91,9 @@ func New(cfg Config) (*Dashboard, error) {
 		origin = u.Scheme + "://" + net.JoinHostPort(host, port)
 	}
 	cfg.BaseURL = origin
+	if u.Scheme == "http" && host != "localhost" && !strings.HasSuffix(host, ".localhost") {
+		return nil, fmt.Errorf("dashboard: BaseURL %q must be https (plain http is only allowed on localhost)", cfg.BaseURL)
+	}
 	if cfg.DevLogin && host != "localhost" && !strings.HasSuffix(host, ".localhost") {
 		return nil, fmt.Errorf("dashboard: dev login is only allowed on localhost, not %q", host)
 	}
@@ -148,6 +151,12 @@ func (d *Dashboard) routes() {
 	}
 	m.HandleFunc("POST /logout", d.post(d.handleLogout))
 	m.HandleFunc("GET /dashboard", d.page(d.handleDashboard))
+	m.HandleFunc("GET /dashboard/subdomains", d.page(d.active(d.handleSubdomains)))
+	m.HandleFunc("POST /dashboard/subdomains", d.post(d.active(d.handleClaim)))
+	m.HandleFunc("POST /dashboard/subdomains/release", d.post(d.active(d.handleRelease)))
+	m.HandleFunc("GET /dashboard/tokens", d.page(d.active(d.handleTokens)))
+	m.HandleFunc("POST /dashboard/tokens", d.post(d.active(d.handleCreateToken)))
+	m.HandleFunc("POST /dashboard/tokens/revoke", d.post(d.active(d.handleRevokeToken)))
 	m.HandleFunc("GET /waitlist", d.page(d.handleWaitlist))
 	m.HandleFunc("GET /static/app.css", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
@@ -177,6 +186,18 @@ type view struct {
 	User    *store.User // nil when signed out
 	CSRF    string      // the session's CSRF token for POST forms
 	Message string      // error page text
+	Wide    bool        // account pages use the wide layout
+
+	// Account pages.
+	Error      string // inline form error
+	BaseURL    string
+	Host       string // BaseURL's host[:port]
+	Tunnels    []tunnelRow
+	Plan       planView
+	Subdomains []subdomainRow
+	Tokens     []tokenRow
+	NewToken   string // plaintext of a token created by this very request
+	NewName    string
 }
 
 // render executes the named template into a buffer and writes it with status.
@@ -213,15 +234,6 @@ func (d *Dashboard) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.render(w, http.StatusOK, "home", view{Title: "Sign in"})
-}
-
-// handleDashboard is a stub; the account pages fill it in.
-func (d *Dashboard) handleDashboard(w http.ResponseWriter, r *http.Request, s *session) {
-	if s.User.Waitlisted {
-		http.Redirect(w, r, "/waitlist", http.StatusSeeOther)
-		return
-	}
-	d.render(w, http.StatusOK, "dashboard", view{Title: "Dashboard", User: &s.User, CSRF: s.CSRF})
 }
 
 func (d *Dashboard) handleWaitlist(w http.ResponseWriter, r *http.Request, s *session) {

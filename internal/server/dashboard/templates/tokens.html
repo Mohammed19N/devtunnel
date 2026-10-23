@@ -1,0 +1,23 @@
+{{define "tokens"}}{{template "head" .}}
+<h1>CLI tokens</h1>
+{{if .NewToken}}<div class="notice">
+<p><strong>Copy it now &mdash; you won't see it again.</strong></p>
+<p>Token "{{.NewName}}":</p>
+<pre><code>{{.NewToken}}</code></pre>
+<p>Then run:</p>
+<pre><code>passway login {{.NewToken}}</code></pre>
+</div>{{end}}
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{if .Tokens}}<div class="scroll"><table>
+<thead><tr><th>Name</th><th>Token</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+<tbody>{{range .Tokens}}<tr><td>{{.Name}}</td><td><code>{{.Prefix}}…</code></td><td>{{.Created}}</td><td>{{.LastUsed}}</td>
+<td>{{if .Revoked}}<span class="tag">revoked</span>{{else}}<form method="post" action="/dashboard/tokens/revoke"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit" class="link">Revoke</button></form>{{end}}</td></tr>{{end}}</tbody>
+</table></div>{{else}}<p>You have no tokens yet.</p>{{end}}
+<form class="row" method="post" action="/dashboard/tokens">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label for="name">New token name</label>
+<input id="name" name="name" required maxlength="40" autocomplete="off" placeholder="my laptop">
+<button type="submit" class="btn">Create token</button>
+</form>
+<p><a href="/dashboard">Back to dashboard</a></p>
+{{template "foot" .}}{{end}}

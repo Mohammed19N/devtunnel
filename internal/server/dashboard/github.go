@@ -158,6 +158,15 @@ func (d *Dashboard) signIn(w http.ResponseWriter, r *http.Request, p ghProfile, 
 		d.fail(w, http.StatusForbidden, ageMessage(min))
 		return
 	}
+	banned, err := d.cfg.Store.IsBanned(ctx, "user", p.Login)
+	if err != nil {
+		d.internalError(w, "ban lookup", err)
+		return
+	}
+	if banned {
+		d.fail(w, http.StatusForbidden, "account suspended")
+		return
+	}
 	n, err := d.cfg.Store.CountUsers(ctx, server.PlanFree.Name)
 	if err != nil {
 		d.internalError(w, "count users", err)
