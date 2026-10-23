@@ -20,12 +20,14 @@ type Meter struct {
 	flushEvery time.Duration
 	log        *slog.Logger
 
-	mu          sync.Mutex
-	pending     map[string]*meterEntry // unflushed bytes by account ID
-	usage       map[string]*meterUsage // cached DB usage by account ID
-	freeTotal   int64                  // cached free-plan total from the DB
-	freePending int64                  // unflushed bytes of free-plan accounts
-	warned      bool
+	mu           sync.Mutex
+	pending      map[string]*meterEntry // unflushed bytes by account ID
+	usage        map[string]*meterUsage // cached DB usage by account ID
+	freeTotal    int64                  // cached free-plan total from the DB
+	freePending  int64                  // unflushed bytes of free-plan accounts
+	inflight     map[string]int64       // bytes being written by a flush, not yet in the cached totals
+	inflightFree int64
+	warned       bool
 }
 
 type meterEntry struct {
@@ -36,7 +38,8 @@ type meterEntry struct {
 type meterUsage struct {
 	acc     Account
 	n       int64
-	touched bool // used since the last flush; untouched entries are evicted
+	touched bool          // used since the last flush; untouched entries are evicted
+	ready   chan struct{} // non-nil (open) while the first load is in flight
 }
 
 // NewMeter creates a Meter. flushEvery <= 0 means 60s; freeCap <= 0 disables the global cap.
@@ -77,25 +80,33 @@ func (m *Meter) Over(acc Account) bool {
 	}
 	m.mu.Lock()
 	u := m.usage[acc.ID]
-	if u == nil {
+	switch {
+	case u == nil:
+		// First sight of this account since the last flush: one caller loads,
+		// concurrent ones wait. A failed load is cached as 0 (fail open) and
+		// refreshed by the next flush, so errors never cause per-request I/O.
+		u = &meterUsage{acc: acc, ready: make(chan struct{})}
+		m.usage[acc.ID] = u
+		ready := u.ready
 		m.mu.Unlock()
-		// First sight of this account since the last flush: load once.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		n, err := m.d.Usage(ctx, acc)
 		cancel()
 		if err != nil {
 			m.log.Warn("meter: load usage", "account", acc.ID, "err", err)
+			n = 0
 		}
 		m.mu.Lock()
-		if u = m.usage[acc.ID]; u == nil {
-			u = &meterUsage{acc: acc, n: n}
-			if err == nil {
-				m.usage[acc.ID] = u
-			}
-		}
+		u.n, u.ready = n, nil
+		close(ready)
+	case u.ready != nil:
+		ready := u.ready
+		m.mu.Unlock()
+		<-ready
+		m.mu.Lock()
 	}
 	u.touched = true
-	total := u.n
+	total := u.n + m.inflight[acc.ID]
 	if e := m.pending[acc.ID]; e != nil {
 		total += e.n
 	}
@@ -110,7 +121,7 @@ func (m *Meter) FreeCapHit() bool {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.freeTotal+m.freePending >= m.freeCap
+	return m.freeTotal+m.freePending+m.inflightFree >= m.freeCap
 }
 
 // Run flushes every flushEvery and once more when ctx ends.
@@ -137,12 +148,24 @@ func (m *Meter) flush(ctx context.Context) {
 	m.mu.Lock()
 	batch := m.pending
 	m.pending = make(map[string]*meterEntry)
+	// The batch stays visible to Over/FreeCapHit until the refresh commits.
+	m.inflight = make(map[string]int64, len(batch))
+	m.inflightFree = m.freePending
+	for id, e := range batch {
+		m.inflight[id] = e.n
+	}
 	m.freePending = 0
 	m.mu.Unlock()
 
 	for id, e := range batch {
 		if err := m.d.AddUsage(ctx, e.acc, e.n); err != nil {
 			m.log.Warn("meter: flush usage", "account", id, "bytes", e.n, "err", err)
+			m.mu.Lock()
+			delete(m.inflight, id)
+			if e.acc.Plan.Name == PlanFree.Name {
+				m.inflightFree -= e.n
+			}
+			m.mu.Unlock()
 			m.Add(e.acc, e.n)
 			delete(batch, id)
 		}
@@ -152,6 +175,9 @@ func (m *Meter) flush(ctx context.Context) {
 	m.mu.Lock()
 	refresh := make(map[string]Account)
 	for id, u := range m.usage {
+		if u.ready != nil {
+			continue // first load still running
+		}
 		if !u.touched && batch[id] == nil {
 			delete(m.usage, id)
 			continue
@@ -180,6 +206,15 @@ func (m *Meter) flush(ctx context.Context) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.inflight, m.inflightFree = nil, 0
+	for id := range refresh {
+		// A failed refresh keeps the old cache plus what was just written.
+		if _, ok := fresh[id]; !ok && batch[id] != nil {
+			if u := m.usage[id]; u != nil {
+				u.n += batch[id].n
+			}
+		}
+	}
 	for id, n := range fresh {
 		if u := m.usage[id]; u != nil {
 			u.n = n
@@ -191,7 +226,10 @@ func (m *Meter) flush(ctx context.Context) {
 		return
 	}
 	m.freeTotal = free
-	if !m.warned && free+m.freePending >= m.freeCap/10*8 {
+	over80 := free+m.freePending >= m.freeCap/10*8
+	if !over80 {
+		m.warned = false // re-arm, e.g. after the month rolls over
+	} else if !m.warned {
 		m.warned = true
 		m.log.Warn("free plan bandwidth at 80% of the monthly cap", "used", free+m.freePending, "cap", m.freeCap)
 	}

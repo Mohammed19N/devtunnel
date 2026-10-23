@@ -17,11 +17,14 @@ import (
 
 // cloudEdge starts a cloud server for d with a live tunnel "quick" whose
 // backend answers 200 "ok".
-func cloudEdge(t *testing.T, d *usageDir, backend http.Handler) (*Server, string, string, *yamux.Session) {
+func cloudEdge(t *testing.T, d *usageDir, backend http.Handler, mutate ...func(*Server)) (*Server, string, string, *yamux.Session) {
 	t.Helper()
 	srv, ts := newCloudServer(t, d.fakeDirectory)
 	srv.cfg.Directory = d
 	srv.meter = NewMeter(d, 500<<30, 0, quietLog())
+	for _, m := range mutate {
+		m(srv)
+	}
 	resp, sess := dialRaw(t, ts, hello("", "A"))
 	if resp.Ready == nil {
 		t.Fatalf("ready: %+v", resp.Error)
@@ -223,5 +226,81 @@ func TestRunBackgroundStopsAndFlushes(t *testing.T) {
 	defer d.umu.Unlock()
 	if d.added != 42 {
 		t.Fatalf("flushed %d, want 42", d.added)
+	}
+}
+
+func TestEdgeUnlimitedFollowsBrowserWarning(t *testing.T) {
+	for _, flag := range []bool{false, true} {
+		d := newUsageDir()
+		d.acc.Plan = PlanUnlimited
+		_, base, host, _ := cloudEdge(t, d, okBackend(), func(s *Server) { s.cfg.BrowserWarning = flag })
+		c, b := get(t, base, host, "text/html")
+		warned := c == 200 && b != "ok"
+		if warned != flag {
+			t.Fatalf("BrowserWarning=%v: warned=%v (%d %q)", flag, warned, c, b)
+		}
+	}
+}
+
+func TestEdgeProNotBlockedByFreeCap(t *testing.T) {
+	d := newUsageDir()
+	d.acc.Plan = PlanPro
+	srv, base, host, _ := cloudEdge(t, d, okBackend())
+	srv.meter.freeCap = 100
+	srv.meter.Add(Account{ID: "other", Plan: PlanFree}, 200)
+	if !srv.meter.FreeCapHit() {
+		t.Fatal("setup: cap not hit")
+	}
+	if c, _ := get(t, base, host, ""); c != 200 {
+		t.Fatalf("pro blocked by free cap: %d", c)
+	}
+}
+
+func TestUserBanHostStaysForbidden(t *testing.T) {
+	d := newUsageDir()
+	srv, base, host, sess := cloudEdge(t, d, okBackend())
+	d.umu.Lock()
+	d.banUser = []string{"alice"}
+	d.umu.Unlock()
+	srv.pollBans(context.Background())
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := srv.registry.Lookup("quick"); !ok && sess.IsClosed() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, ok := srv.registry.Lookup("quick"); ok {
+		t.Fatal("tunnel not released")
+	}
+	if c, _ := get(t, base, host, ""); c != 403 {
+		t.Fatalf("after user ban and release: %d, want 403", c)
+	}
+	srv.pollBans(context.Background()) // still banned: stays 403
+	if c, _ := get(t, base, host, ""); c != 403 {
+		t.Fatalf("second poll: %d, want 403", c)
+	}
+	d.umu.Lock()
+	d.banUser = nil
+	d.umu.Unlock()
+	srv.pollBans(context.Background())
+	if c, _ := get(t, base, host, ""); c != 502 {
+		t.Fatalf("after unban: %d, want 502 offline", c)
+	}
+}
+
+func TestRunBackgroundSecondCallIsNoop(t *testing.T) {
+	d := newUsageDir()
+	srv, _, _, _ := cloudEdge(t, d, okBackend())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go srv.RunBackground(ctx)
+	time.Sleep(50 * time.Millisecond)
+	done := make(chan struct{})
+	go func() { srv.RunBackground(ctx); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second RunBackground did not return")
 	}
 }

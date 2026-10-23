@@ -87,6 +87,8 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 		http.Error(w, "unknown host", http.StatusNotFound)
 		return
 	}
+	// In cloud mode /_passway/continue is reserved on every tunnel host (Free
+	// plans need it), so it never reaches a tunnel.
 	if r.URL.Path == continuePath {
 		if !s.cfg.BrowserWarning && s.cfg.Directory == nil {
 			http.NotFound(w, r)
@@ -113,7 +115,7 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 			renderPage(w, r, pageBanned, pageData{Host: r.Host})
 			return
 		}
-		warn = acc.Plan.Warning
+		warn = acc.Plan.Warning || (acc.Plan.Name == PlanUnlimited.Name && s.cfg.BrowserWarning)
 		if acc.Plan.RateLimit > 0 {
 			rate = acc.Plan.RateLimit
 		}

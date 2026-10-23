@@ -36,12 +36,13 @@ type Config struct {
 
 // Server is the Passway tunnel server.
 type Server struct {
-	cfg      Config
-	registry *Registry
-	log      *slog.Logger
-	limiter  *RateLimiter // nil = unlimited
-	meter    *Meter       // nil unless Directory is set
-	bans     atomic.Pointer[banSet]
+	cfg       Config
+	registry  *Registry
+	log       *slog.Logger
+	limiter   *RateLimiter // nil = unlimited
+	meter     *Meter       // nil unless Directory is set
+	bans      atomic.Pointer[banSet]
+	bgStarted atomic.Bool
 }
 
 // New creates a Server from cfg, applying defaults.
@@ -95,8 +96,12 @@ func (s *Server) PublicURL(name string) string {
 }
 
 // RunBackground runs the usage meter and the ban poller until ctx ends, then
-// flushes the meter. Without a Directory it just waits for ctx. Call it once.
+// flushes the meter. Without a Directory it just waits for ctx. Only the
+// first call runs the workers; later calls return immediately.
 func (s *Server) RunBackground(ctx context.Context) {
+	if !s.bgStarted.CompareAndSwap(false, true) {
+		return
+	}
 	if s.cfg.Directory == nil {
 		<-ctx.Done()
 		return
