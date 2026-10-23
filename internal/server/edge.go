@@ -72,6 +72,10 @@ func newTunnelProxy(t *Tunnel, maxConns int, log *slog.Logger) {
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(err, errBandwidth) {
+				renderPage(w, r, pageBandwidth, pageData{Host: r.Host})
+				return
+			}
 			if !errors.Is(err, context.Canceled) {
 				log.Warn("proxy error", "name", t.Name, "err", err)
 			}
@@ -128,7 +132,10 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 		renderPage(w, r, pageWarning, d)
 		return
 	}
-	if s.meter != nil && (s.meter.Over(acc) || (acc.Plan.Name == PlanFree.Name && s.meter.FreeCapHit())) {
+	over := func() bool {
+		return s.meter.Over(acc) || (acc.Plan.Name == PlanFree.Name && s.meter.FreeCapHit())
+	}
+	if s.meter != nil && over() {
 		renderPage(w, r, pageBandwidth, pageData{Host: r.Host})
 		return
 	}
@@ -141,11 +148,11 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 	}
 	t.requests.Add(1)
 	if s.meter != nil {
-		add := func(n int64) { s.meter.Add(acc, n) }
+		m := &transferMeter{add: func(n int64) { s.meter.Add(acc, n) }, over: over}
 		if r.Body != nil && r.Body != http.NoBody {
-			r.Body = &countingBody{ReadCloser: r.Body, add: add}
+			r.Body = &countingBody{ReadCloser: r.Body, m: m}
 		}
-		w = &countingWriter{ResponseWriter: w, add: add}
+		w = &countingWriter{ResponseWriter: w, m: m}
 	}
 	t.proxy.ServeHTTP(w, r)
 }

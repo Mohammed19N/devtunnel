@@ -45,6 +45,10 @@ type Server struct {
 	meter     *Meter       // nil unless Directory is set
 	bans      atomic.Pointer[banSet]
 	bgStarted atomic.Bool
+
+	pollMu      sync.Mutex // serializes applying ban polls
+	pollStarted uint64     // polls started
+	pollApplied uint64     // the newest poll whose result was applied
 }
 
 // New creates a Server from cfg, applying defaults.
@@ -130,6 +134,17 @@ func (s *Server) TunnelsFor(accountID string) []TunnelSnapshot {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ConnectedAt.Before(out[j].ConnectedAt) })
 	return out
+}
+
+// CloseTokenTunnels closes the live tunnels of accountID that signed in with
+// tokenID, e.g. after the token is revoked.
+func (s *Server) CloseTokenTunnels(accountID string, tokenID int64) {
+	for _, t := range s.registry.ByAccount(accountID) {
+		if t.Account.TokenID == tokenID && t.session != nil {
+			s.log.Info("closing tunnel of revoked token", "name", t.Name, "account", accountID, "token", tokenID)
+			t.session.Close()
+		}
+	}
 }
 
 // CloseTunnels closes every active tunnel session. The server keeps accepting new tunnels.

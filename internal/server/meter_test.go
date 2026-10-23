@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +24,9 @@ type usageDir struct {
 	loads   int
 	banUser []string
 	banHost []string
+	revoked []int64 // token IDs RevokedTokens reports
+
+	revokedAsked [][]int64 // the ids of each RevokedTokens call
 
 	usageErr   error
 	usageDelay time.Duration
@@ -64,6 +68,19 @@ func (d *usageDir) BannedLists(context.Context) ([]string, []string, error) {
 	d.umu.Lock()
 	defer d.umu.Unlock()
 	return d.banUser, d.banHost, nil
+}
+
+func (d *usageDir) RevokedTokens(_ context.Context, ids []int64) ([]int64, error) {
+	d.umu.Lock()
+	defer d.umu.Unlock()
+	d.revokedAsked = append(d.revokedAsked, ids)
+	var out []int64
+	for _, id := range ids {
+		if slices.Contains(d.revoked, id) {
+			out = append(out, id)
+		}
+	}
+	return out, nil
 }
 
 func newUsageDir() *usageDir { return &usageDir{fakeDirectory: newFakeDirectory(PlanFree, "quick")} }

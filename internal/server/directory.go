@@ -18,4 +18,6 @@ type Directory interface {
 	PlanUsage(ctx context.Context, plan string) (int64, error)
 	// BannedLists lists bans for the poller: user logins and host labels.
 	BannedLists(ctx context.Context) (users, hosts []string, err error)
+	// RevokedTokens returns the IDs among ids whose tokens are revoked.
+	RevokedTokens(ctx context.Context, ids []int64) ([]int64, error)
 }

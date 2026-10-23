@@ -12,9 +12,10 @@ var ErrInvalidToken = errors.New("invalid token")
 
 // Account is an authenticated tunnel owner.
 type Account struct {
-	ID    string // decimal user id, or "static" / "anonymous"
-	Login string
-	Plan  Plan
+	ID      string // decimal user id, or "static" / "anonymous"
+	Login   string
+	Plan    Plan
+	TokenID int64 // the database token used to sign in; 0 for static tokens
 }
 
 // Authenticator validates a client token and returns the owning account.

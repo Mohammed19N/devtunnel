@@ -42,3 +42,22 @@ func TestSessionExpiry(t *testing.T) {
 		t.Fatalf("expired: %v", err)
 	}
 }
+
+func TestCreateSessionPurgesExpired(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	u := mkUser(t, s, 1, "a")
+	if _, _, err := s.CreateSession(ctx, u.ID, -time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.CreateSession(ctx, u.ID, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM sessions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("%d session rows, want 1 (the expired one purged)", n)
+	}
+}

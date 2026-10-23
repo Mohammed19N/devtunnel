@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httputil"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,7 @@ type Tunnel struct {
 	ConnectedAt   time.Time
 
 	requests  atomic.Int64
+	claimedBy string // ClaimRequest.AccountID; its holds are free to the same account
 	session   *yamux.Session
 	proxy     *httputil.ReverseProxy
 	transport *http.Transport
@@ -40,6 +42,7 @@ type ClaimRequest struct {
 
 type hold struct {
 	sessionID  string
+	accountID  string // "" = held for sessionID only
 	releasedAt time.Time
 }
 
@@ -75,13 +78,16 @@ func (r *Registry) heldBy(name string) (hold, bool) {
 	return h, true
 }
 
-// available reports whether session may take name. An active tunnel owned by
-// the same session does not block it (reconnect takeover). Caller holds mu.
-func (r *Registry) available(name, session string) bool {
+// available reports whether req may take name. An active tunnel owned by the
+// same session does not block it (reconnect takeover). A hold does not block
+// its own session, nor a new session of the same account (a restarted cloud
+// client). Caller holds mu.
+func (r *Registry) available(name string, req ClaimRequest) bool {
 	if cur, ok := r.active[name]; ok {
-		return cur.SessionID == session
+		return cur.SessionID == req.SessionID
 	}
-	if h, ok := r.heldBy(name); ok && h.sessionID != session {
+	if h, ok := r.heldBy(name); ok && h.sessionID != req.SessionID &&
+		(req.AccountID == "" || h.accountID != req.AccountID) {
 		return false
 	}
 	return true
@@ -93,6 +99,7 @@ func (r *Registry) grant(name string, req ClaimRequest, t *Tunnel) (replaced *Tu
 	delete(r.held, name)
 	t.Name = name
 	t.SessionID = req.SessionID
+	t.claimedBy = req.AccountID
 	r.active[name] = t
 	return replaced
 }
@@ -121,14 +128,14 @@ func (r *Registry) Claim(req ClaimRequest, t *Tunnel) (replaced *Tunnel, err err
 		if err := ValidateName(req.Name); err != nil {
 			return nil, err
 		}
-		if !r.available(req.Name, req.SessionID) {
+		if !r.available(req.Name, req) {
 			return nil, &protocol.Error{Code: protocol.CodeNameTaken, Message: "name " + req.Name + " is taken"}
 		}
 		return r.grant(req.Name, req, t), nil
 	}
 
 	if req.PreferredName != "" && ValidateName(req.PreferredName) == nil &&
-		r.available(req.PreferredName, req.SessionID) {
+		r.available(req.PreferredName, req) {
 		return r.grant(req.PreferredName, req, t), nil
 	}
 
@@ -165,7 +172,7 @@ func (r *Registry) Release(t *Tunnel) {
 		return
 	}
 	delete(r.active, t.Name)
-	r.held[t.Name] = hold{sessionID: t.SessionID, releasedAt: r.now()}
+	r.held[t.Name] = hold{sessionID: t.SessionID, accountID: t.claimedBy, releasedAt: r.now()}
 }
 
 // Lookup returns the active tunnel for name.
@@ -188,7 +195,11 @@ func (r *Registry) All() []*Tunnel {
 }
 
 // limitError is the error for a plan whose concurrent-tunnel limit is reached.
+// The plan name is shown capitalised ("Free").
 func limitError(plan string, max int) *protocol.Error {
+	if plan != "" {
+		plan = strings.ToUpper(plan[:1]) + plan[1:]
+	}
 	return &protocol.Error{Code: protocol.CodeLimitReached,
 		Message: fmt.Sprintf("tunnel limit reached: your %s plan allows %d concurrent tunnel(s)", plan, max)}
 }

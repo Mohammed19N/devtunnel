@@ -27,8 +27,8 @@ func (d *Directory) month() string {
 	return now().UTC().Format("2006-01")
 }
 
-// Authenticate resolves a token to its account. An admin token (user 0) maps
-// to an unlimited "admin-token" account.
+// Authenticate resolves a token to its account. Admin tokens (user 0) are
+// refused: they belong to self-hosted relays (see AdminTokens).
 func (d *Directory) Authenticate(ctx context.Context, token string) (server.Account, error) {
 	t, err := d.S.TokenByPlain(ctx, token)
 	if err != nil {
@@ -38,7 +38,7 @@ func (d *Directory) Authenticate(ctx context.Context, token string) (server.Acco
 		return server.Account{}, err
 	}
 	if t.UserID == 0 {
-		return server.Account{ID: "admin-token", Plan: server.PlanUnlimited}, nil
+		return server.Account{}, &protocol.Error{Code: protocol.CodeUnauthorized, Message: "admin tokens only work on self-hosted servers"}
 	}
 	u, err := d.S.UserByID(ctx, t.UserID)
 	if errors.Is(err, ErrNotFound) {
@@ -58,9 +58,10 @@ func (d *Directory) Authenticate(ctx context.Context, token string) (server.Acco
 		return server.Account{}, &protocol.Error{Code: protocol.CodeUnauthorized, Message: "your account is on the waitlist"}
 	}
 	return server.Account{
-		ID:    strconv.FormatInt(u.ID, 10),
-		Login: u.Login,
-		Plan:  server.PlanByName(u.Plan),
+		ID:      strconv.FormatInt(u.ID, 10),
+		Login:   u.Login,
+		Plan:    server.PlanByName(u.Plan),
+		TokenID: t.ID,
 	}, nil
 }
 
@@ -100,7 +101,7 @@ func (d *Directory) Owns(ctx context.Context, acc server.Account, name string) (
 	return err == nil && owner == id, err
 }
 
-// Banned reports whether acc's login or the host label is banned.
+// Banned reports whether acc (by id, or a legacy login ban) or the host label is banned.
 func (d *Directory) Banned(ctx context.Context, acc server.Account, label string) (bool, error) {
 	if id, ok := userID(acc); ok {
 		if b, err := d.S.IsUserBannedBy(ctx, acc.Login, id); err != nil || b {
@@ -140,7 +141,7 @@ func (d *Directory) PlanUsage(ctx context.Context, plan string) (int64, error) {
 	return d.S.PlanUsage(ctx, plan, d.month())
 }
 
-// BannedLists returns banned user logins (and "id:<n>" keys) and host labels.
+// BannedLists returns the user-ban keys ("id:<n>", or a legacy login) and host labels.
 func (d *Directory) BannedLists(ctx context.Context) (users, hosts []string, err error) {
 	bans, err := d.S.Bans(ctx)
 	if err != nil {
@@ -155,6 +156,11 @@ func (d *Directory) BannedLists(ctx context.Context) (users, hosts []string, err
 		}
 	}
 	return users, hosts, nil
+}
+
+// RevokedTokens returns the IDs among ids whose tokens are revoked.
+func (d *Directory) RevokedTokens(ctx context.Context, ids []int64) ([]int64, error) {
+	return d.S.RevokedTokens(ctx, ids)
 }
 
 // AdminTokens authenticates self-hosted admin tokens (user 0) only; a token

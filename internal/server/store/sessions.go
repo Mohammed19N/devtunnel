@@ -29,6 +29,11 @@ func (s *Store) CreateSession(ctx context.Context, userID int64, ttl time.Durati
 	}
 	now := time.Now()
 	exp := now.Add(ttl)
+	// Expired sessions are never read again; purging them here keeps the
+	// table bounded without a background job.
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < ?`, ts(now)); err != nil {
+		return "", Session{}, err
+	}
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions (id_hash, user_id, csrf, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
 		sessionKey(id), userID, csrf, ts(now), ts(exp)); err != nil {

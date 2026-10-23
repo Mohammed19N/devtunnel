@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// Ban blocks a user (Kind "user", Value a login) or a host (Kind "host", Value a subdomain).
+// Ban blocks a user (Kind "user", Value "id:<user id>", or a login in legacy
+// rows) or a host (Kind "host", Value a subdomain).
 type Ban struct {
 	Kind, Value, Reason string
 	CreatedAt           time.Time
@@ -56,16 +57,13 @@ func (s *Store) IsBanned(ctx context.Context, kind, value string) (bool, error) 
 // userBanKey is the ban value that follows a user across GitHub renames.
 func userBanKey(id int64) string { return "id:" + strconv.FormatInt(id, 10) }
 
-// BanUser bans u by login and by id, so renaming on GitHub doesn't lift it.
+// BanUser bans u by id only, so the ban follows the user across GitHub
+// renames and never passes to whoever takes the login next.
 func (s *Store) BanUser(ctx context.Context, u User, reason string) error {
-	if err := s.AddBan(ctx, Ban{Kind: "user", Value: u.Login, Reason: reason}); err != nil {
-		return err
-	}
 	return s.AddBan(ctx, Ban{Kind: "user", Value: userBanKey(u.ID), Reason: reason})
 }
 
-// UnbanUser removes both bans written by BanUser. Pass the user as it was
-// banned and as it is now if the login may have changed.
+// UnbanUser removes u's id ban and any legacy login ban on u's current login.
 func (s *Store) UnbanUser(ctx context.Context, u User) error {
 	if err := s.RemoveBan(ctx, "user", u.Login); err != nil {
 		return err
@@ -73,7 +71,7 @@ func (s *Store) UnbanUser(ctx context.Context, u User) error {
 	return s.RemoveBan(ctx, "user", userBanKey(u.ID))
 }
 
-// IsUserBanned reports whether u's current login or id is banned.
+// IsUserBanned reports whether u's id, or (a legacy ban) its current login, is banned.
 func (s *Store) IsUserBanned(ctx context.Context, u User) (bool, error) {
 	return s.IsUserBannedBy(ctx, u.Login, u.ID)
 }

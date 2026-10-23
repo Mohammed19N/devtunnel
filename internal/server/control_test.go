@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -487,6 +488,7 @@ func (fakeDir) AddUsage(context.Context, Account, int64) error          { return
 func (fakeDir) Usage(context.Context, Account) (int64, error)           { return 0, nil }
 func (fakeDir) PlanUsage(context.Context, string) (int64, error)        { return 0, nil }
 func (fakeDir) BannedLists(context.Context) ([]string, []string, error) { return nil, nil, nil }
+func (fakeDir) RevokedTokens(context.Context, []int64) ([]int64, error) { return nil, nil }
 
 // fakeDirectory is an in-memory Directory for handshake tests.
 type fakeDirectory struct {
@@ -505,6 +507,8 @@ func (d *fakeDirectory) Authenticate(_ context.Context, token string) (Account, 
 	if token == "bad" {
 		return Account{}, ErrInvalidToken
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	return d.acc, nil
 }
 func (d *fakeDirectory) Names(context.Context, Account) ([]string, error) {
@@ -529,6 +533,7 @@ func (d *fakeDirectory) PlanUsage(context.Context, string) (int64, error) { retu
 func (d *fakeDirectory) BannedLists(context.Context) ([]string, []string, error) {
 	return nil, nil, nil
 }
+func (d *fakeDirectory) RevokedTokens(context.Context, []int64) ([]int64, error) { return nil, nil }
 
 func newCloudServer(t *testing.T, d *fakeDirectory) (*Server, *httptest.Server) {
 	return newTestServerCfg(t, nil, func(c *Config) { c.Directory = d })
@@ -562,7 +567,7 @@ func TestCloudTunnelLimit(t *testing.T) {
 	}
 	resp, _ = dialRaw(t, ts, hello("acme", "s2"))
 	if resp.Error == nil || resp.Error.Code != protocol.CodeLimitReached ||
-		resp.Error.Message != "tunnel limit reached: your free plan allows 1 concurrent tunnel(s)" {
+		resp.Error.Message != "tunnel limit reached: your Free plan allows 1 concurrent tunnel(s)" {
 		t.Fatalf("second: %+v", resp)
 	}
 }
@@ -698,5 +703,77 @@ func TestCloudDirectoryErrorIsRetryable(t *testing.T) {
 	resp, _ := dialRaw(t, ts, hello("", "s1"))
 	if resp.Error == nil || resp.Error.Code != protocol.CodeInternal || protocol.IsFatal(resp.Error) {
 		t.Fatalf("got %+v", resp.Error)
+	}
+}
+
+// The tunnel up/down log lines name the account, for takedown requests.
+func TestTunnelLogsNameAccount(t *testing.T) {
+	var buf bytes.Buffer
+	lw := lockedWriter{w: &buf, mu: &sync.Mutex{}}
+	logged := func(msg string) bool {
+		lw.mu.Lock()
+		defer lw.mu.Unlock()
+		for _, line := range strings.Split(buf.String(), "\n") {
+			if strings.Contains(line, "msg=\""+msg+"\"") && strings.Contains(line, "account=u1") && strings.Contains(line, "login=alice") {
+				return true
+			}
+		}
+		return false
+	}
+	_, ts := newTestServerCfg(t, nil, func(c *Config) {
+		c.Directory = newFakeDirectory(PlanFree, "quick")
+		c.Logger = slog.New(slog.NewTextHandler(lw, nil))
+	})
+	resp, sess := dialRaw(t, ts, hello("", "s1"))
+	if resp.Ready == nil {
+		t.Fatalf("ready: %+v", resp.Error)
+	}
+	sess.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for !(logged("tunnel up") && logged("tunnel down")) {
+		if time.Now().After(deadline) {
+			lw.mu.Lock()
+			defer lw.mu.Unlock()
+			t.Fatalf("tunnel up/down lines lack account and login:\n%s", buf.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitClosed(t *testing.T, sess *yamux.Session, what string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !sess.IsClosed() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !sess.IsClosed() {
+		t.Fatalf("%s: session not closed", what)
+	}
+}
+
+func TestCloseTokenTunnels(t *testing.T) {
+	d := newFakeDirectory(PlanPro, "app-one", "app-two")
+	srv, ts := newCloudServer(t, d)
+	setToken := func(id int64) {
+		d.mu.Lock()
+		d.acc.TokenID = id
+		d.mu.Unlock()
+	}
+	setToken(7)
+	if resp, _ := dialRaw(t, ts, hello("app-one", "s1")); resp.Ready == nil {
+		t.Fatalf("a1: %+v", resp.Error)
+	}
+	s1 := srv.registry.ByAccount("u1")[0].session
+	setToken(8)
+	resp, s2 := dialRaw(t, ts, hello("app-two", "s2"))
+	if resp.Ready == nil {
+		t.Fatalf("a2: %+v", resp.Error)
+	}
+	srv.CloseTokenTunnels("other", 7) // another account's token 7: no effect
+	srv.CloseTokenTunnels("u1", 7)
+	waitClosed(t, s1, "token 7 tunnel")
+	time.Sleep(50 * time.Millisecond)
+	if s2.IsClosed() {
+		t.Fatal("tunnel of another token was closed")
 	}
 }

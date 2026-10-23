@@ -118,8 +118,8 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	if err := protocol.WriteFrame(ctrl, protocol.HelloResponse{Ready: ready}); err != nil {
 		return
 	}
-	s.log.Info("tunnel up", "name", t.Name, "session", t.SessionID[:8])
-	defer s.log.Info("tunnel down", "name", t.Name, "session", t.SessionID[:8])
+	s.log.Info("tunnel up", "name", t.Name, "session", t.SessionID[:8], "account", acc.ID, "login", acc.Login)
+	defer s.log.Info("tunnel down", "name", t.Name, "session", t.SessionID[:8], "account", acc.ID, "login", acc.Login)
 
 	// Clients never open streams after the handshake; reject any that try so
 	// they cannot pile up in yamux's accept backlog.

@@ -235,3 +235,35 @@ func TestClaimConcurrentRespectsLimit(t *testing.T) {
 		})
 	}
 }
+
+// A cloud client that restarts gets a new session ID; its account's hold
+// must not lock it out of its own name.
+func TestHoldSameAccountNewSession(t *testing.T) {
+	r, _ := newTestRegistry()
+	a := &Tunnel{Account: Account{ID: "u1"}}
+	if _, err := r.Claim(ClaimRequest{Name: "acme", SessionID: "A", AccountID: "u1"}, a); err != nil {
+		t.Fatal(err)
+	}
+	r.Release(a)
+	wantCode(t, claimErr(r, ClaimRequest{Name: "acme", SessionID: "C", AccountID: "u2"}, &Tunnel{}), protocol.CodeNameTaken)
+	wantCode(t, claimErr(r, ClaimRequest{Name: "acme", SessionID: "D"}, &Tunnel{}), protocol.CodeNameTaken)
+	b := &Tunnel{Account: Account{ID: "u1"}}
+	if _, err := r.Claim(ClaimRequest{Name: "acme", SessionID: "B", AccountID: "u1"}, b); err != nil {
+		t.Fatalf("same account, new session: %v", err)
+	}
+	if b.Name != "acme" {
+		t.Fatalf("got %q", b.Name)
+	}
+}
+
+// Self-hosted claims carry no AccountID, so holds stay per session even
+// though every static-token tunnel shares the account "static".
+func TestHoldSelfHostedStaysPerSession(t *testing.T) {
+	r, _ := newTestRegistry()
+	a := &Tunnel{Account: Account{ID: "static"}}
+	if _, err := r.Claim(ClaimRequest{Name: "acme", SessionID: "A"}, a); err != nil {
+		t.Fatal(err)
+	}
+	r.Release(a)
+	wantCode(t, claimErr(r, ClaimRequest{Name: "acme", SessionID: "B"}, &Tunnel{Account: Account{ID: "static"}}), protocol.CodeNameTaken)
+}

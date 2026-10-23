@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"time"
 )
@@ -47,13 +48,42 @@ func (b *banSet) userKey(acc Account) string {
 }
 
 // pollBans refreshes the cached ban set and closes the live sessions of
-// banned users and hosts. On error the previous cache stays.
+// banned users and hosts. On error the previous cache stays. Polls (the
+// ticker and PollBansNow) apply their results one at a time under pollMu,
+// which is not held across the database read; a poll that a later-started
+// poll has already overtaken drops its stale result.
 func (s *Server) pollBans(ctx context.Context) {
+	s.pollMu.Lock()
+	s.pollStarted++
+	gen := s.pollStarted
+	s.pollMu.Unlock()
+
 	users, hosts, err := s.cfg.Directory.BannedLists(ctx)
 	if err != nil {
 		s.log.Warn("ban poll failed", "err", err)
 		return
 	}
+	// Tokens revoked by another process (the admin CLI): one query per poll.
+	var live []int64
+	for _, t := range s.registry.All() {
+		if t.Account.TokenID != 0 {
+			live = append(live, t.Account.TokenID)
+		}
+	}
+	var revoked []int64
+	if len(live) > 0 {
+		slices.Sort(live)
+		if revoked, err = s.cfg.Directory.RevokedTokens(ctx, slices.Compact(live)); err != nil {
+			s.log.Warn("revoked token poll failed", "err", err)
+		}
+	}
+
+	s.pollMu.Lock()
+	defer s.pollMu.Unlock()
+	if gen < s.pollApplied {
+		return
+	}
+	s.pollApplied = gen
 	set := &banSet{users: make(map[string]bool, len(users)), hosts: make(map[string]bool, len(hosts)), sticky: map[string]string{}}
 	for _, u := range users {
 		set.users[strings.ToLower(u)] = true
@@ -79,8 +109,14 @@ func (s *Server) pollBans(ctx context.Context) {
 	}
 	s.bans.Store(set)
 	for _, t := range s.registry.All() {
-		if set.banned(t.Account, t.Name) && t.session != nil {
+		if t.session == nil {
+			continue
+		}
+		if set.banned(t.Account, t.Name) {
 			s.log.Info("closing banned tunnel", "name", t.Name, "login", t.Account.Login)
+			t.session.Close()
+		} else if t.Account.TokenID != 0 && slices.Contains(revoked, t.Account.TokenID) {
+			s.log.Info("closing tunnel of revoked token", "name", t.Name, "account", t.Account.ID, "token", t.Account.TokenID)
 			t.session.Close()
 		}
 	}

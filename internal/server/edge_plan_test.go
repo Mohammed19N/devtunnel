@@ -2,13 +2,17 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -318,5 +322,178 @@ func TestRunBackgroundSecondCallIsNoop(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("second RunBackground did not return")
+	}
+}
+
+// capPlan is a plan with a 1 MiB monthly bandwidth and no other limits.
+var capPlan = Plan{Name: PlanPro.Name, MaxTunnels: 5, MaxSubdomains: 5, Bandwidth: 1 << 20}
+
+func TestEdgeBandwidthCutsLargeResponse(t *testing.T) {
+	d := newUsageDir()
+	d.acc.Plan = capPlan
+	chunk := []byte(strings.Repeat("x", 32<<10))
+	_, base, host, _ := cloudEdge(t, d, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for i := 0; i < 640; i++ { // 20 MiB
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	req, _ := http.NewRequest("GET", base+"/", nil)
+	req.Host = host
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	n, err := io.Copy(io.Discard, resp.Body)
+	if n >= 2<<20 || err == nil {
+		t.Fatalf("received %d bytes, err %v; want < 2 MiB and a broken body", n, err)
+	}
+}
+
+func TestEdgeBandwidthCutsUpload(t *testing.T) {
+	d := newUsageDir()
+	d.acc.Plan = capPlan
+	got := make(chan int64, 1)
+	_, base, host, _ := cloudEdge(t, d, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.Copy(io.Discard, r.Body)
+		got <- n
+		io.WriteString(w, "ok")
+	}))
+	req, _ := http.NewRequest("POST", base+"/", bytes.NewReader(make([]byte, 20<<20)))
+	req.Host = host
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		// The client may instead see the connection drop mid-upload.
+		if resp.StatusCode != http.StatusPaymentRequired {
+			t.Fatalf("upload over the cap: status %d, want 402", resp.StatusCode)
+		}
+	}
+	select {
+	case n := <-got:
+		if n >= 2<<20 {
+			t.Fatalf("backend read %d bytes, want < 2 MiB", n)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("backend never finished reading")
+	}
+}
+
+func TestEdgeBandwidthClosesWebSocket(t *testing.T) {
+	d := newUsageDir()
+	d.acc.Plan = capPlan
+	_, ts, host, _ := cloudEdge(t, d, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, brw, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		brw.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n")
+		brw.Flush()
+		io.Copy(conn, brw)
+	}))
+	u, _ := url.Parse(ts)
+	c, err := net.Dial("tcp", u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(5 * time.Second))
+	fmt.Fprintf(c, "GET / HTTP/1.1\r\nHost: %s\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n", host)
+	br := bufio.NewReader(c)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil || resp.StatusCode != 101 {
+		t.Fatalf("upgrade: %v %v", resp, err)
+	}
+	go func() {
+		chunk := make([]byte, 64<<10)
+		for i := 0; i < 128; i++ { // 8 MiB
+			if _, err := c.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+	n, err := io.Copy(io.Discard, br)
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		t.Fatalf("stream not closed after %d echoed bytes (timed out)", n)
+	}
+	if n >= 2<<20 {
+		t.Fatalf("echoed %d bytes, want < 2 MiB", n)
+	}
+}
+
+// staleListsDir is a usageDir whose first BannedLists call blocks until gate
+// is closed and then returns an empty (stale) list.
+type staleListsDir struct {
+	*usageDir
+	calls   atomic.Int32
+	entered chan struct{}
+	gate    chan struct{}
+}
+
+func (d *staleListsDir) BannedLists(ctx context.Context) ([]string, []string, error) {
+	if d.calls.Add(1) == 1 {
+		close(d.entered)
+		<-d.gate
+		return nil, nil, nil
+	}
+	return d.usageDir.BannedLists(ctx)
+}
+
+// A poll that read the database before a newer poll applied its result must
+// not overwrite that result (PollBansNow racing the ticker).
+func TestPollBansStaleResultDiscarded(t *testing.T) {
+	d := newUsageDir()
+	sd := &staleListsDir{usageDir: d, entered: make(chan struct{}), gate: make(chan struct{})}
+	srv, base, host, sess := cloudEdge(t, d, okBackend(), func(s *Server) { s.cfg.Directory = sd })
+	d.umu.Lock()
+	d.banUser = []string{"alice"}
+	d.umu.Unlock()
+	ctx := context.Background()
+	stale := make(chan struct{})
+	go func() { defer close(stale); srv.PollBansNow(ctx) }()
+	<-sd.entered
+	srv.PollBansNow(ctx)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, ok := srv.registry.Lookup("quick"); !ok && sess.IsClosed() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if c, _ := get(t, base, host, ""); c != 403 {
+		t.Fatalf("after ban: %d, want 403", c)
+	}
+	close(sd.gate)
+	<-stale
+	if c, _ := get(t, base, host, ""); c != 403 {
+		t.Fatalf("after the stale poll finished: %d, want 403", c)
+	}
+}
+
+// A token revoked from another process (the admin CLI) is noticed by the
+// ban poller, which closes the tunnels using it.
+func TestBanPollerClosesRevokedTokenTunnels(t *testing.T) {
+	d := newUsageDir()
+	d.acc.TokenID = 5
+	srv, _, _, sess := cloudEdge(t, d, okBackend())
+	srv.pollBans(context.Background())
+	time.Sleep(50 * time.Millisecond)
+	if sess.IsClosed() {
+		t.Fatal("closed before the token was revoked")
+	}
+	d.umu.Lock()
+	d.revoked = []int64{5}
+	d.umu.Unlock()
+	srv.pollBans(context.Background())
+	waitClosed(t, sess, "revoked token")
+	d.umu.Lock()
+	defer d.umu.Unlock()
+	if len(d.revokedAsked) != 2 || !slices.Equal(d.revokedAsked[1], []int64{5}) {
+		t.Fatalf("RevokedTokens calls = %v, want one per poll with [5]", d.revokedAsked)
 	}
 }

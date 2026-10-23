@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -119,4 +120,31 @@ func (s *Store) RevokeToken(ctx context.Context, userID, tokenID int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// RevokedTokens returns, in ascending order, the IDs among ids whose tokens
+// are revoked, in one query.
+func (s *Store) RevokedTokens(ctx context.Context, ids []int64) ([]int64, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	q := `SELECT id FROM tokens WHERE revoked_at IS NOT NULL AND id IN (?` + strings.Repeat(", ?", len(ids)-1) + `) ORDER BY id`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }

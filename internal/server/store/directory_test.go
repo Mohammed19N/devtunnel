@@ -28,7 +28,7 @@ func TestDirectoryAuthenticate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if acc.ID != "1" || acc.Login != "alice" || acc.Plan != server.PlanPro {
+	if acc.ID != "1" || acc.Login != "alice" || acc.Plan != server.PlanPro || acc.TokenID != tok.ID {
 		t.Fatalf("got %+v", acc)
 	}
 	_, err = d.Authenticate(ctx, "pw_unknown")
@@ -37,14 +37,14 @@ func TestDirectoryAuthenticate(t *testing.T) {
 		t.Fatalf("unknown token: %v", err)
 	}
 
-	// Admin token maps to the unlimited admin account.
+	// Admin tokens are for self-hosted relays only.
 	adminPlain, _, err := s.CreateToken(ctx, 0, "admin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	acc, err = d.Authenticate(ctx, adminPlain)
-	if err != nil || acc.ID != "admin-token" || acc.Plan != server.PlanUnlimited {
-		t.Fatalf("admin: %+v, %v", acc, err)
+	if _, err := d.Authenticate(ctx, adminPlain); !errors.As(err, &pe) || pe.Code != protocol.CodeUnauthorized ||
+		pe.Message != "admin tokens only work on self-hosted servers" {
+		t.Fatalf("admin token in cloud mode: %v", err)
 	}
 
 	// Waitlisted.
@@ -211,16 +211,88 @@ func TestBanUserSurvivesRename(t *testing.T) {
 		t.Fatalf("IsUserBanned = %v, %v", b, err)
 	}
 	users, _, _ := d.BannedLists(ctx)
-	if !reflect.DeepEqual(users, []string{"alice", "id:1"}) {
+	if !reflect.DeepEqual(users, []string{"id:1"}) {
 		t.Errorf("BannedLists users = %v", users)
 	}
 	if err := s.UnbanUser(ctx, renamed); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UnbanUser(ctx, User{ID: 1, Login: "alice"}); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := d.Authenticate(ctx, plain); err != nil {
 		t.Fatalf("after unban: %v", err)
+	}
+}
+
+// A user ban follows the user, not the login: after alice bans, renames and
+// is unbanned, a new user who takes the login "alice" starts clean.
+func TestUserBanNotPassedToNewLoginHolder(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t)
+	d := &Directory{S: s}
+	u := mkUser(t, s, 1, "alice")
+	if err := s.BanUser(ctx, u, "abuse"); err != nil {
+		t.Fatal(err)
+	}
+	renamed := mkUser(t, s, 1, "alice2")
+	if err := s.UnbanUser(ctx, renamed); err != nil {
+		t.Fatal(err)
+	}
+	stranger := mkUser(t, s, 2, "alice")
+	plain, _, err := s.CreateToken(ctx, stranger.ID, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, err := s.IsUserBanned(ctx, stranger); err != nil || b {
+		t.Fatalf("IsUserBanned(new alice) = %v, %v", b, err)
+	}
+	if _, err := d.Authenticate(ctx, plain); err != nil {
+		t.Fatalf("Authenticate(new alice): %v", err)
+	}
+	if users, _, err := d.BannedLists(ctx); err != nil || len(users) != 0 {
+		t.Fatalf("BannedLists users = %v, %v; want none", users, err)
+	}
+}
+
+// UnbanUser also clears a legacy login-keyed row for the user's login, and
+// such rows are still honoured until then.
+func TestUnbanUserClearsLegacyLoginRow(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t)
+	u := mkUser(t, s, 1, "alice")
+	if err := s.AddBan(ctx, Ban{Kind: "user", Value: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := s.IsUserBanned(ctx, u); !b {
+		t.Fatal("legacy login ban not honoured")
+	}
+	if err := s.UnbanUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if bans, _ := s.Bans(ctx); len(bans) != 0 {
+		t.Fatalf("bans left: %+v", bans)
+	}
+}
+
+func TestDirectoryRevokedTokens(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t)
+	d := &Directory{S: s}
+	u := mkUser(t, s, 1, "alice")
+	var ids []int64
+	for _, name := range []string{"a", "b", "c"} {
+		_, tok, err := s.CreateToken(ctx, u.ID, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, tok.ID)
+	}
+	if err := s.RevokeToken(ctx, u.ID, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	got, err := d.RevokedTokens(ctx, append(ids, 999))
+	if err != nil || !reflect.DeepEqual(got, []int64{ids[1]}) {
+		t.Fatalf("RevokedTokens = %v, %v; want [%d]", got, err, ids[1])
+	}
+	if got, err := d.RevokedTokens(ctx, nil); err != nil || len(got) != 0 {
+		t.Fatalf("RevokedTokens(nil) = %v, %v", got, err)
 	}
 }

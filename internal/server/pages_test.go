@@ -107,8 +107,9 @@ func TestRenderPageHardeningHeaders(t *testing.T) {
 func TestRenderPageOwnerAndPlain(t *testing.T) {
 	w := httptest.NewRecorder()
 	renderPage(w, pageReq("text/html"), pageWarning, pageData{Host: "a.x.dev", Continue: "/c", Owner: "u1login"})
-	if !strings.Contains(w.Body.String(), "You are about to visit a tunnel run by @u1login") {
-		t.Fatalf("owner missing: %s", w.Body)
+	if !strings.Contains(w.Body.String(), "<p>This tunnel is run by @u1login.</p>") ||
+		strings.Count(w.Body.String(), "You are about to visit") != 1 {
+		t.Fatalf("owner line wrong: %s", w.Body)
 	}
 	w = httptest.NewRecorder()
 	renderPage(w, pageReq("text/html"), pageWarning, pageData{Host: "a.x.dev", Continue: "/c"})

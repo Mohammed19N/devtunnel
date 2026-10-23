@@ -372,6 +372,7 @@ func (cloudDir) AddUsage(context.Context, server.Account, int64) error          
 func (cloudDir) Usage(context.Context, server.Account) (int64, error)           { return 0, nil }
 func (cloudDir) PlanUsage(context.Context, string) (int64, error)               { return 0, nil }
 func (cloudDir) BannedLists(context.Context) ([]string, []string, error)        { return nil, nil, nil }
+func (cloudDir) RevokedTokens(context.Context, []int64) ([]int64, error)        { return nil, nil }
 
 func startCloudEnv(t *testing.T) string { return startCloudEnvDir(t, cloudDir{}) }
 
@@ -416,7 +417,7 @@ func TestRunHTTPFatalMessage(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"http", "--server", su, "--inspect=false", local.URL}, &out, &errb, cfgPath(t))
-	want := "error: tunnel limit reached: your free plan allows 1 concurrent tunnel(s)\nmanage your account at " + su + "/dashboard\n"
+	want := "error: tunnel limit reached: your Free plan allows 1 concurrent tunnel(s)\nmanage your account at " + su + "/dashboard\n"
 	if code != 1 || errb.String() != want {
 		t.Fatalf("code=%d stderr=%q, want %q", code, errb.String(), want)
 	}

@@ -862,7 +862,7 @@ func TestCloudFreeSecondTunnelRefused(t *testing.T) {
 	err := client.Run(ctx, client.Config{Server: e.base, Token: tok, Name: "", Target: target, Logger: discard})
 	var pe *protocol.Error
 	if !errors.As(err, &pe) || pe.Code != protocol.CodeLimitReached ||
-		pe.Message != "tunnel limit reached: your free plan allows 1 concurrent tunnel(s)" {
+		pe.Message != "tunnel limit reached: your Free plan allows 1 concurrent tunnel(s)" {
 		t.Fatalf("got %v", err)
 	}
 }

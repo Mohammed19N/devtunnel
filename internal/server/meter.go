@@ -3,11 +3,13 @@ package server
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -235,28 +237,67 @@ func (m *Meter) flush(ctx context.Context) {
 	}
 }
 
+// meterCheckEvery is how many counted bytes pass between bandwidth re-checks
+// during one transfer.
+const meterCheckEvery = 256 << 10
+
+// errBandwidth stops a transfer that crossed the account's bandwidth limit.
+var errBandwidth = errors.New("monthly bandwidth limit reached")
+
+// transferMeter counts the bytes of one proxied request in both directions
+// and re-checks the limit every meterCheckEvery bytes, so one long response,
+// upload or WebSocket cannot run far past it. over reads the meter's caches only.
+type transferMeter struct {
+	add     func(int64)
+	over    func() bool
+	since   atomic.Int64 // bytes counted since the last check
+	stopped atomic.Bool
+}
+
+// count records n bytes and reports whether the transfer must stop.
+func (m *transferMeter) count(n int) bool {
+	if n > 0 {
+		m.add(int64(n))
+		if s := m.since.Add(int64(n)); s >= meterCheckEvery && m.since.CompareAndSwap(s, 0) && m.over() {
+			m.stopped.Store(true)
+		}
+	}
+	return m.stopped.Load()
+}
+
 // countingBody counts bytes read from a request body.
 type countingBody struct {
 	io.ReadCloser
-	add func(int64)
+	m *transferMeter
 }
 
 func (b *countingBody) Read(p []byte) (int, error) {
+	if b.m.stopped.Load() {
+		return 0, errBandwidth
+	}
 	n, err := b.ReadCloser.Read(p)
-	b.add(int64(n))
+	if b.m.count(n) {
+		return n, errBandwidth
+	}
 	return n, err
 }
 
 // countingWriter counts response bytes and counts both directions of a
-// hijacked (upgraded) connection.
+// hijacked (upgraded) connection. Once over the limit, Write fails, which
+// makes the ReverseProxy abort the response.
 type countingWriter struct {
 	http.ResponseWriter
-	add func(int64)
+	m *transferMeter
 }
 
 func (w *countingWriter) Write(p []byte) (int, error) {
+	if w.m.stopped.Load() {
+		return 0, errBandwidth
+	}
 	n, err := w.ResponseWriter.Write(p)
-	w.add(int64(n))
+	if w.m.count(n) {
+		return n, errBandwidth
+	}
 	return n, err
 }
 
@@ -269,22 +310,33 @@ func (w *countingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return &countingConn{Conn: conn, add: w.add}, brw, nil
+	return &countingConn{Conn: conn, m: w.m}, brw, nil
 }
 
+// countingConn counts a hijacked connection and closes it once over the limit.
 type countingConn struct {
 	net.Conn
-	add func(int64)
+	m *transferMeter
 }
 
 func (c *countingConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
-	c.add(int64(n))
+	if c.m.count(n) {
+		c.Conn.Close()
+		return n, errBandwidth
+	}
 	return n, err
 }
 
 func (c *countingConn) Write(p []byte) (int, error) {
+	if c.m.stopped.Load() {
+		c.Conn.Close()
+		return 0, errBandwidth
+	}
 	n, err := c.Conn.Write(p)
-	c.add(int64(n))
+	if c.m.count(n) {
+		c.Conn.Close()
+		return n, errBandwidth
+	}
 	return n, err
 }
