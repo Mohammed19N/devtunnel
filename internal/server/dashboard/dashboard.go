@@ -38,8 +38,11 @@ type Config struct {
 	DevLogin      bool          // allow /auth/dev?login=X (only when BaseURL host is localhost or *.localhost)
 
 	Tunnels func(accountID string) []TunnelInfo // live tunnels for the dashboard
-	Now     func() time.Time                    // nil = time.Now
-	Logger  *slog.Logger                        // nil = slog.Default()
+	// Disconnect closes the live tunnels of accountID that use tokenID; it is
+	// called after the token is revoked. nil = no-op.
+	Disconnect func(accountID string, tokenID int64)
+	Now        func() time.Time // nil = time.Now
+	Logger     *slog.Logger     // nil = slog.Default()
 }
 
 // TunnelInfo describes one live tunnel.
@@ -116,6 +119,9 @@ func New(cfg Config) (*Dashboard, error) {
 	}
 	if cfg.Tunnels == nil {
 		cfg.Tunnels = func(string) []TunnelInfo { return nil }
+	}
+	if cfg.Disconnect == nil {
+		cfg.Disconnect = func(string, int64) {}
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
@@ -203,6 +209,9 @@ type view struct {
 	Tunnels    []tunnelRow
 	Plan       planView
 	Subdomains []subdomainRow
+	ClaimFull  bool // the plan's reserved subdomains are all used: no claim form
+	ClaimMax   int
+	Upgrade    bool // on Free, so ClaimFull suggests upgrading
 	Tokens     []tokenRow
 	NewToken   string // plaintext of a token created by this very request
 	NewName    string

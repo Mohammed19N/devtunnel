@@ -159,6 +159,10 @@ func (d *Dashboard) renderSubdomains(w http.ResponseWriter, r *http.Request, s *
 		d.internalError(w, "subdomains", err)
 		return
 	}
+	plan := server.PlanByName(s.User.Plan)
+	v.ClaimMax = plan.MaxSubdomains
+	v.ClaimFull = plan.MaxSubdomains > 0 && len(v.Subdomains) >= plan.MaxSubdomains
+	v.Upgrade = plan.Name == server.PlanFree.Name
 	d.render(w, status, "subdomains", v)
 }
 
@@ -274,6 +278,7 @@ func (d *Dashboard) handleRevokeToken(w http.ResponseWriter, r *http.Request, s 
 		d.fail(w, http.StatusBadRequest, "That token id isn't valid.")
 		return
 	}
+	accountID := strconv.FormatInt(s.User.ID, 10)
 	switch err := d.cfg.Store.RevokeToken(r.Context(), s.User.ID, id); {
 	case errors.Is(err, store.ErrNotFound):
 		// Already revoked (a double click) is fine; someone else's is not.
@@ -291,6 +296,7 @@ func (d *Dashboard) handleRevokeToken(w http.ResponseWriter, r *http.Request, s 
 		d.internalError(w, "revoke token", err)
 		return
 	}
+	d.cfg.Disconnect(accountID, id)
 	if err := d.cfg.Store.Audit(r.Context(), s.User.ID, "token.revoke", "id="+strconv.FormatInt(id, 10)); err != nil {
 		d.internalError(w, "audit", err)
 		return

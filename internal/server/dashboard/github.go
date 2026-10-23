@@ -188,6 +188,17 @@ func (d *Dashboard) signIn(w http.ResponseWriter, r *http.Request, p ghProfile, 
 			d.internalError(w, "audit", err)
 			return
 		}
+	} else if u.Waitlisted && n < d.cfg.FreeSignupCap {
+		// There is room again (an admin raised the cap, or Free users left).
+		if err := d.cfg.Store.SetWaitlisted(ctx, u.ID, false); err != nil {
+			d.internalError(w, "admit from waitlist", err)
+			return
+		}
+		u.Waitlisted = false
+		if err := d.cfg.Store.Audit(ctx, u.ID, "waitlist.admit", "via=sign-in"); err != nil {
+			d.internalError(w, "audit", err)
+			return
+		}
 	}
 	// Checked on every sign-in, not just at signup, so a failed claim or a
 	// user admitted from the waitlist still ends up with a default name.

@@ -82,7 +82,7 @@ func TestDashboardShowsTunnelsAndUsage(t *testing.T) {
 		t.Errorf("Tunnels called with %q", gotID)
 	}
 	for _, want := range []string{
-		"curl -fsSL " + testBaseURL + "/install.sh | sh", "passway login",
+		"go install github.com/mohammed19n/passway/cmd/passway@latest", "passway login",
 		"https://swift-fox-1.passway.test", "0.3.1", "5 minutes ago", "1234",
 		"Free", "300 MB of 1 GB", "<progress", "Upgrade to Pro", "disabled", "Coming soon",
 		"Reserved subdomains", `href="/dashboard/tokens"`,
@@ -511,5 +511,102 @@ func TestStateCookieClearedOnFailure(t *testing.T) {
 	w = e.do("GET", "/auth/github/callback?code=c-alice&state="+url.QueryEscape(state), nil, stateCookie)
 	if c := cookieNamed(w, stateCookie.Name); c == nil || c.MaxAge >= 0 {
 		t.Errorf("github error: state cookie not cleared: %+v", c)
+	}
+}
+
+func TestRevokeTokenDisconnects(t *testing.T) {
+	type call struct {
+		account string
+		token   int64
+	}
+	var calls []call
+	e := newTestEnv(t, func(c *Config) {
+		c.Disconnect = func(account string, token int64) { calls = append(calls, call{account, token}) }
+	})
+	sc, csrf := e.signedIn(t)
+	e.post("/dashboard/tokens", url.Values{"name": {"laptop"}}, sc, csrf)
+	u := mustUser(t, e, "alice")
+	toks, _ := e.st.ListTokens(context.Background(), u.ID)
+	id := strconv.FormatInt(toks[0].ID, 10)
+	if w := e.post("/dashboard/tokens/revoke", url.Values{"id": {id}}, sc, csrf); w.Code != http.StatusSeeOther {
+		t.Fatalf("revoke = %d", w.Code)
+	}
+	e.post("/dashboard/tokens/revoke", url.Values{"id": {id}}, sc, csrf) // double click: nothing more to close
+	want := []call{{strconv.FormatInt(u.ID, 10), toks[0].ID}}
+	if len(calls) != 1 || calls[0] != want[0] {
+		t.Fatalf("Disconnect calls = %v, want %v", calls, want)
+	}
+}
+
+// A waitlisted user is let in at their next sign-in once there is room.
+func TestWaitlistedAdmittedWhenRoom(t *testing.T) {
+	e := newTestEnv(t, func(c *Config) { c.FreeSignupCap = 1 })
+	e.signedIn(t) // alice takes the only Free slot
+	e.gh.addUser(43, "bob", 400*24*time.Hour)
+	if w := e.signIn(t, "bob"); w.Header().Get("Location") != "/waitlist" {
+		t.Fatalf("bob -> %q, want /waitlist", w.Header().Get("Location"))
+	}
+	ctx := context.Background()
+	if err := e.st.SetPlan(ctx, mustUser(t, e, "alice").ID, "pro"); err != nil {
+		t.Fatal(err)
+	}
+	w := e.signIn(t, "bob")
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("bob with room -> %d %q, want 303 /dashboard", w.Code, w.Header().Get("Location"))
+	}
+	bob := mustUser(t, e, "bob")
+	if bob.Waitlisted {
+		t.Error("bob still waitlisted")
+	}
+	if subs, _ := e.st.Subdomains(ctx, bob.ID); len(subs) != 1 || !subs[0].IsDefault {
+		t.Errorf("admitted user's subdomains = %+v, want one default", subs)
+	}
+}
+
+// After alice is banned, renames and is unbanned, a new GitHub account that
+// takes the login "alice" signs in normally.
+func TestBanNotPassedToNewLoginHolder(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.signedIn(t)
+	ctx := context.Background()
+	if err := e.st.BanUser(ctx, mustUser(t, e, "alice"), "abuse"); err != nil {
+		t.Fatal(err)
+	}
+	e.gh.addUser(42, "alice2", 400*24*time.Hour)
+	e.signIn(t, "alice2") // the rename reaches the users row (and is refused)
+	if err := e.st.UnbanUser(ctx, mustUser(t, e, "alice2")); err != nil {
+		t.Fatal(err)
+	}
+	e.gh.addUser(77, "alice", 400*24*time.Hour)
+	if w := e.signIn(t, "alice"); w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/dashboard" {
+		t.Fatalf("new alice sign-in = %d %q %s", w.Code, w.Header().Get("Location"), w.Body)
+	}
+}
+
+const claimFormAction = `action="/dashboard/subdomains"`
+
+func TestClaimFormHiddenAtLimit(t *testing.T) {
+	e := newTestEnv(t, nil)
+	sc, csrf := e.signedIn(t)
+	body := e.do("GET", "/dashboard/subdomains", nil, sc).Body.String()
+	if !strings.Contains(body, "Upgrade to Pro to reserve your own names") || strings.Contains(body, claimFormAction) {
+		t.Fatalf("free user at limit: claim form shown or upgrade note missing:\n%s", body)
+	}
+
+	ctx := context.Background()
+	if err := e.st.SetPlan(ctx, mustUser(t, e, "alice").ID, "pro"); err != nil {
+		t.Fatal(err)
+	}
+	if body := e.do("GET", "/dashboard/subdomains", nil, sc).Body.String(); !strings.Contains(body, claimFormAction) || strings.Contains(body, "Upgrade to Pro") {
+		t.Fatalf("pro user with room: no claim form:\n%s", body)
+	}
+	for _, n := range []string{"app-one", "app-two", "app-three", "app-four"} {
+		if w := e.post("/dashboard/subdomains", url.Values{"name": {n}}, sc, csrf); w.Code != http.StatusSeeOther {
+			t.Fatalf("claim %s = %d %s", n, w.Code, w.Body)
+		}
+	}
+	body = e.do("GET", "/dashboard/subdomains", nil, sc).Body.String()
+	if !strings.Contains(body, "You've used all 5 reserved subdomains") || strings.Contains(body, claimFormAction) {
+		t.Fatalf("pro user at limit: claim form shown or note missing:\n%s", body)
 	}
 }
