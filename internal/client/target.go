@@ -19,6 +19,9 @@ func ParseTarget(s string) (*url.URL, error) {
 		return nil, fmt.Errorf("invalid target %q", s)
 	}
 	if !strings.Contains(s, "://") {
+		if strings.HasPrefix(s, ":") {
+			s = "localhost" + s
+		}
 		if !strings.Contains(s, ":") {
 			if !isDigits(s) {
 				return nil, fmt.Errorf("invalid target %q: expected port, host:port or URL", s)

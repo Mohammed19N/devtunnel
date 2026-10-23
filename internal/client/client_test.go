@@ -3,9 +3,11 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
@@ -150,4 +152,51 @@ func TestRunReconnectsSameName(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return")
 	}
+}
+
+func TestRunNotPasswayServer(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+	select {
+	case err := <-runAsync(context.Background(), testConfig(ts.URL)):
+		if !errors.Is(err, ErrNotPassway) {
+			t.Fatalf("err = %v, want ErrNotPassway", err)
+		}
+		if !strings.Contains(err.Error(), "HTTP 404") {
+			t.Fatalf("err = %q, want HTTP 404", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+}
+
+func TestRunCustomHandler(t *testing.T) {
+	srv, su := newTestServer(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan protocol.Ready, 1)
+	cfg := testConfig(su)
+	cfg.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { fmt.Fprint(w, "custom") })
+	cfg.OnReady = func(r protocol.Ready) { ready <- r }
+	done := runAsync(ctx, cfg)
+	var r protocol.Ready
+	select {
+	case r = <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no ready")
+	}
+	req, _ := http.NewRequest("GET", su+"/", nil)
+	req.Host = strings.TrimPrefix(r.URL, "http://")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(b) != "custom" {
+		t.Fatalf("body = %q", b)
+	}
+	_ = srv
+	cancel()
+	<-done
 }

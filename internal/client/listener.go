@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"time"
 
 	"github.com/hashicorp/yamux"
@@ -47,19 +48,24 @@ func (l *sessionListener) Close() error   { return l.sess.Close() }
 func (l *sessionListener) Addr() net.Addr { return l.sess.LocalAddr() }
 
 func newHTTPServer(cfg Config, log *slog.Logger) *http.Server {
+	h := cfg.Handler
+	if h == nil {
+		h = NewProxy(cfg.Target, cfg.RewriteHost, log)
+	}
 	return &http.Server{
-		Handler:           logRequests(newProxy(cfg, log), cfg.OnRequest),
+		Handler:           logRequests(h, cfg.OnRequest),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 }
 
-func newProxy(cfg Config, log *slog.Logger) http.Handler {
-	target := cfg.Target
+// NewProxy returns a reverse proxy to target. With rewriteHost the outgoing
+// Host header is the target's; otherwise the incoming Host is preserved.
+func NewProxy(target *url.URL, rewriteHost bool, log *slog.Logger) http.Handler {
 	return &httputil.ReverseProxy{
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(target)
-			if !cfg.RewriteHost {
+			if !rewriteHost {
 				pr.Out.Host = pr.In.Host
 			}
 			for _, h := range []string{"X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {

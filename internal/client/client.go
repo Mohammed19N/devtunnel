@@ -44,9 +44,16 @@ type Config struct {
 	Logger        *slog.Logger
 	OnReady       func(protocol.Ready) // called after every successful (re)connect
 	OnRequest     func(RequestLog)     // called once per proxied request
+	// Handler, when non-nil, replaces the default reverse proxy to Target as
+	// the handler for tunnel streams (OnRequest logging still wraps it).
+	Handler http.Handler
 
 	initialBackoff time.Duration // test override
 }
+
+// ErrNotPassway is returned (fatal) when the first-ever dial gets an HTTP
+// response other than 101, i.e. the server is not a Passway server.
+var ErrNotPassway = errors.New("client: server is not a Passway server")
 
 // Run connects to the server and serves the tunnel, reconnecting on
 // non-fatal failures. It blocks until ctx is cancelled (returning nil) or a
@@ -79,7 +86,7 @@ func Run(ctx context.Context, cfg Config) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if err != nil && protocol.IsFatal(err) {
+		if err != nil && (protocol.IsFatal(err) || errors.Is(err, ErrNotPassway)) {
 			return err
 		}
 		if connected {
@@ -132,6 +139,8 @@ type runner struct {
 	wsURL     string
 	sessionID string
 	lastName  string
+
+	connectedOnce bool // a Ready has been received at least once
 }
 
 // once makes one connection attempt and serves it until it ends. connected
@@ -149,9 +158,12 @@ func (c *runner) once(ctx context.Context) (connected bool, err error) {
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // explicit insecure opt-in
 		}}
 	}
-	ws, _, err := websocket.Dial(dialCtx, c.wsURL, opts)
+	ws, resp, err := websocket.Dial(dialCtx, c.wsURL, opts)
 	dialCancel()
 	if err != nil {
+		if resp != nil && resp.StatusCode != http.StatusSwitchingProtocols && !c.connectedOnce {
+			return false, fmt.Errorf("%w (HTTP %d from %s)", ErrNotPassway, resp.StatusCode, c.cfg.Server)
+		}
 		return false, fmt.Errorf("dial: %w", err)
 	}
 	ws.SetReadLimit(-1)
@@ -183,22 +195,23 @@ func (c *runner) once(ctx context.Context) (connected bool, err error) {
 	if err := protocol.WriteFrame(ctrl, hello); err != nil {
 		return false, err
 	}
-	var resp protocol.HelloResponse
+	var hresp protocol.HelloResponse
 	_ = ctrl.SetReadDeadline(time.Now().Add(handshakeTimeout))
-	if err := protocol.ReadFrame(ctrl, &resp); err != nil {
+	if err := protocol.ReadFrame(ctrl, &hresp); err != nil {
 		return false, fmt.Errorf("reading handshake response: %w", err)
 	}
 	_ = ctrl.SetReadDeadline(time.Time{})
-	if resp.Error != nil {
-		return false, resp.Error
+	if hresp.Error != nil {
+		return false, hresp.Error
 	}
-	if resp.Ready == nil {
+	if hresp.Ready == nil {
 		return false, errors.New("handshake response missing ready")
 	}
-	c.lastName = resp.Ready.Name
-	c.log.Info("tunnel ready", "url", resp.Ready.URL)
+	c.lastName = hresp.Ready.Name
+	c.connectedOnce = true
+	c.log.Info("tunnel ready", "url", hresp.Ready.URL)
 	if c.cfg.OnReady != nil {
-		c.cfg.OnReady(*resp.Ready)
+		c.cfg.OnReady(*hresp.Ready)
 	}
 
 	hs := newHTTPServer(c.cfg, c.log)

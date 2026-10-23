@@ -19,7 +19,7 @@ var defaultServer = "http://localhost:8080" // set with -ldflags once the domain
 const usage = `usage: passway <command> [arguments]
 
 Commands:
-  http [--name N] [--server URL] [--host-header preserve|rewrite] [--insecure] <target>
+  http [--name N] [--server URL] [--host-header preserve|rewrite] [--insecure] [--inspect=false] [--inspect-addr ADDR] <target>
   login <token>
   version
 `

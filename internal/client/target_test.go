@@ -5,6 +5,7 @@ import "testing"
 func TestParseTarget(t *testing.T) {
 	ok := map[string]string{
 		"3000":           "http://localhost:3000",
+		":3000":          "http://localhost:3000",
 		"localhost:8000": "http://localhost:8000",
 		"https://x:9":    "https://x:9",
 		"http://a.b":     "http://a.b",
