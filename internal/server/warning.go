@@ -120,10 +120,19 @@ func stripWarnCookie(h http.Header) {
 }
 
 // dropWarnSetCookie removes any Set-Cookie in h that would set the warned cookie.
+// A nameless pair such as "=passway_warned=x" makes browsers use the value's
+// own "name=" part as the cookie name, so that part is checked too.
 func dropWarnSetCookie(h http.Header) {
 	var out []string
 	for _, v := range h["Set-Cookie"] {
-		if name, _, _ := strings.Cut(v, "="); strings.TrimSpace(name) != warnCookie {
+		pair, _, _ := strings.Cut(v, ";")
+		name, value, _ := strings.Cut(pair, "=")
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name == "" {
+			name, _, _ = strings.Cut(strings.TrimSpace(value), "=")
+			name = strings.ToLower(strings.TrimSpace(name))
+		}
+		if name != warnCookie {
 			out = append(out, v)
 		}
 	}

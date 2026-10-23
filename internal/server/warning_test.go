@@ -137,13 +137,40 @@ func TestStripWarnCookie(t *testing.T) {
 func TestDropWarnSetCookie(t *testing.T) {
 	h := http.Header{"Set-Cookie": {"sid=1; Path=/", "passway_warned=forged; Domain=localhost; Path=/", " passway_warned =x", "Passway_Warned=keep"}}
 	dropWarnSetCookie(h)
-	if got := h["Set-Cookie"]; len(got) != 2 || got[0] != "sid=1; Path=/" || got[1] != "Passway_Warned=keep" {
+	if got := h["Set-Cookie"]; len(got) != 1 || got[0] != "sid=1; Path=/" {
 		t.Fatalf("Set-Cookie = %q", got)
 	}
 	h = http.Header{"Set-Cookie": {"passway_warned=1"}}
 	dropWarnSetCookie(h)
 	if _, ok := h["Set-Cookie"]; ok {
 		t.Fatal("Set-Cookie should be removed")
+	}
+}
+
+func TestDropWarnSetCookieNameless(t *testing.T) {
+	cases := []struct {
+		line string
+		kept bool
+	}{
+		{"=passway_warned=abc; Path=/", false},
+		{" =passway_warned=abc", false},
+		{"Passway_Warned=abc", false},
+		{"passway_warned=abc; Domain=localhost", false},
+		{"session=1; Path=/", true},
+		{"=other", true},
+	}
+	for _, c := range cases {
+		h := http.Header{"Set-Cookie": {c.line}}
+		dropWarnSetCookie(h)
+		_, got := h["Set-Cookie"]
+		if got != c.kept {
+			t.Errorf("Set-Cookie %q: kept = %v, want %v", c.line, got, c.kept)
+		}
+	}
+	h := http.Header{"Set-Cookie": {"=passway_warned=bad; Path=/", "=ok=1; Path=/"}}
+	dropWarnSetCookie(h)
+	if got := h["Set-Cookie"]; len(got) != 1 || got[0] != "=ok=1; Path=/" {
+		t.Fatalf("Set-Cookie = %q, want only the good value", got)
 	}
 }
 
