@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -437,3 +439,51 @@ func TestEdgeRateLimited(t *testing.T) {
 		t.Fatalf("Retry-After = %q", last.Header.Get("Retry-After"))
 	}
 }
+
+type errAuth struct{ err error }
+
+func (a errAuth) Authenticate(context.Context, string) (Account, error) { return Account{}, a.err }
+
+func TestHandshakeAuthErrors(t *testing.T) {
+	cases := []struct {
+		name      string
+		err       error
+		code, msg string
+		fatal     bool
+	}{
+		{"banned", &protocol.Error{Code: protocol.CodeBanned, Message: "account suspended"}, protocol.CodeBanned, "account suspended", true},
+		{"invalid", ErrInvalidToken, protocol.CodeUnauthorized, "invalid token", true},
+		{"wrapped invalid", fmt.Errorf("lookup: %w", ErrInvalidToken), protocol.CodeUnauthorized, "invalid token", true},
+		{"transient", errors.New("database is locked"), protocol.CodeInternal, "temporary server error; retrying", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ts := newTestServer(t, errAuth{tc.err})
+			resp, _ := dialRaw(t, ts, hello("", "s1"))
+			if resp.Error == nil || resp.Error.Code != tc.code || resp.Error.Message != tc.msg {
+				t.Fatalf("got %+v", resp)
+			}
+			if protocol.IsFatal(resp.Error) != tc.fatal {
+				t.Fatalf("IsFatal = %v, want %v", !tc.fatal, tc.fatal)
+			}
+		})
+	}
+}
+
+func TestNewWarnsWhenDirectoryAndAuthBothSet(t *testing.T) {
+	var buf strings.Builder
+	New(Config{Domain: "x", Auth: StaticTokens{"a"}, Directory: fakeDir{}, Logger: slog.New(slog.NewTextHandler(&buf, nil))})
+	if !strings.Contains(buf.String(), "ignored") {
+		t.Fatalf("no warning: %q", buf.String())
+	}
+}
+
+type fakeDir struct{ errAuth }
+
+func (fakeDir) Names(context.Context, Account) ([]string, error)        { return nil, nil }
+func (fakeDir) Owns(context.Context, Account, string) (bool, error)     { return false, nil }
+func (fakeDir) Banned(context.Context, Account, string) (bool, error)   { return false, nil }
+func (fakeDir) AddUsage(context.Context, Account, int64) error          { return nil }
+func (fakeDir) Usage(context.Context, Account) (int64, error)           { return 0, nil }
+func (fakeDir) PlanUsage(context.Context, string) (int64, error)        { return 0, nil }
+func (fakeDir) BannedLists(context.Context) ([]string, []string, error) { return nil, nil, nil }

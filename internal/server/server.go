@@ -17,7 +17,7 @@ type Config struct {
 	Domain       string        // e.g. "localhost", "passway.dev"; lowercased by New
 	PublicScheme string        // "http" or "https"
 	PublicPort   int           // 0 = scheme default (omitted from URLs)
-	Auth         Authenticator // nil = StaticTokens(nil)
+	Auth         Authenticator // nil = StaticTokens(nil); ignored when Directory is set
 	NameHold     time.Duration // 0 = 2 * time.Minute
 	Logger       *slog.Logger  // nil = slog.Default()
 
@@ -55,6 +55,9 @@ func New(cfg Config) *Server {
 		_, _ = rand.Read(cfg.CookieSecret) // crypto/rand.Read never fails
 	}
 	if cfg.Directory != nil {
+		if cfg.Auth != nil {
+			cfg.Logger.Warn("both Auth and Directory are set: Auth is ignored")
+		}
 		cfg.Auth = cfg.Directory
 		if cfg.FreeBandwidthCap == 0 {
 			cfg.FreeBandwidthCap = 500 << 30

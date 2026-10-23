@@ -6,6 +6,10 @@ import (
 	"errors"
 )
 
+// ErrInvalidToken means the token is unknown or revoked. Any other error from
+// an Authenticator is treated as transient.
+var ErrInvalidToken = errors.New("invalid token")
+
 // Account is an authenticated tunnel owner.
 type Account struct {
 	ID    string // decimal user id, or "static" / "anonymous"
@@ -34,7 +38,7 @@ func (s StaticTokens) Authenticate(_ context.Context, token string) (Account, er
 		}
 	}
 	if !ok {
-		return Account{}, errors.New("invalid token")
+		return Account{}, ErrInvalidToken
 	}
 	return Account{ID: "static", Plan: PlanUnlimited}, nil
 }

@@ -33,7 +33,7 @@ func (d *Directory) Authenticate(ctx context.Context, token string) (server.Acco
 	t, err := d.S.TokenByPlain(ctx, token)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			return server.Account{}, errors.New("invalid token")
+			return server.Account{}, server.ErrInvalidToken
 		}
 		return server.Account{}, err
 	}
@@ -41,6 +41,9 @@ func (d *Directory) Authenticate(ctx context.Context, token string) (server.Acco
 		return server.Account{ID: "admin-token", Plan: server.PlanUnlimited}, nil
 	}
 	u, err := d.S.UserByID(ctx, t.UserID)
+	if errors.Is(err, ErrNotFound) {
+		return server.Account{}, server.ErrInvalidToken
+	}
 	if err != nil {
 		return server.Account{}, err
 	}

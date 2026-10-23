@@ -31,8 +31,10 @@ func TestDirectoryAuthenticate(t *testing.T) {
 	if acc.ID != "1" || acc.Login != "alice" || acc.Plan != server.PlanPro {
 		t.Fatalf("got %+v", acc)
 	}
-	if _, err := d.Authenticate(ctx, "pw_unknown"); err == nil {
-		t.Fatal("unknown token must fail")
+	_, err = d.Authenticate(ctx, "pw_unknown")
+	var pe *protocol.Error
+	if !errors.Is(err, server.ErrInvalidToken) || errors.As(err, &pe) {
+		t.Fatalf("unknown token: %v", err)
 	}
 
 	// Admin token maps to the unlimited admin account.
@@ -49,15 +51,11 @@ func TestDirectoryAuthenticate(t *testing.T) {
 	if err := s.SetWaitlisted(ctx, u.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	var pe *protocol.Error
 	if _, err := d.Authenticate(ctx, plain); !errors.As(err, &pe) || pe.Code != protocol.CodeUnauthorized || pe.Message != "your account is on the waitlist" {
 		t.Fatalf("waitlist: %v", err)
 	}
-	if err := s.SetWaitlisted(ctx, u.ID, false); err != nil {
-		t.Fatal(err)
-	}
 
-	// Banned.
+	// Banned beats waitlisted.
 	if err := s.AddBan(ctx, Ban{Kind: "user", Value: "Alice"}); err != nil {
 		t.Fatal(err)
 	}
@@ -65,6 +63,9 @@ func TestDirectoryAuthenticate(t *testing.T) {
 		t.Fatalf("banned: %v", err)
 	}
 	if err := s.RemoveBan(ctx, "user", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetWaitlisted(ctx, u.ID, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -137,9 +138,8 @@ func TestDirectoryUsageMonth(t *testing.T) {
 	s := openTest(t)
 	now := time.Date(2026, 10, 31, 23, 0, 0, 0, time.UTC)
 	d := &Directory{S: s, Now: func() time.Time { return now }}
-	u := mkUser(t, s, 1, "alice")
+	mkUser(t, s, 1, "alice")
 	acc := server.Account{ID: "1", Login: "alice", Plan: server.PlanFree}
-	_ = u
 	if err := d.AddUsage(ctx, acc, 100); err != nil {
 		t.Fatal(err)
 	}
@@ -153,5 +153,33 @@ func TestDirectoryUsageMonth(t *testing.T) {
 	}
 	if n, err := d.PlanUsage(ctx, "free"); err != nil || n != 100 {
 		t.Fatalf("plan usage = %d, %v", n, err)
+	}
+}
+
+func TestDirectoryMonthIsUTC(t *testing.T) {
+	d := &Directory{Now: func() time.Time {
+		return time.Date(2026, 10, 31, 23, 30, 0, 0, time.FixedZone("x", -5*3600))
+	}}
+	if got := d.month(); got != "2026-11" {
+		t.Fatalf("month = %q", got)
+	}
+}
+
+func TestDirectoryDeletedUserIsInvalidToken(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t)
+	u := mkUser(t, s, 1, "alice")
+	plain, _, err := s.CreateToken(ctx, u.ID, "t")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Directory{S: s}).Authenticate(ctx, plain); !errors.Is(err, server.ErrInvalidToken) {
+		t.Fatalf("got %v", err)
 	}
 }

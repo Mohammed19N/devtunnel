@@ -61,7 +61,16 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.cfg.Auth.Authenticate(r.Context(), hello.Token); err != nil {
-		fail(&protocol.Error{Code: protocol.CodeUnauthorized, Message: "invalid token"})
+		var pe *protocol.Error
+		switch {
+		case errors.As(err, &pe):
+			fail(pe)
+		case errors.Is(err, ErrInvalidToken):
+			fail(&protocol.Error{Code: protocol.CodeUnauthorized, Message: "invalid token"})
+		default:
+			s.log.Warn("authenticate failed", "err", err)
+			fail(&protocol.Error{Code: protocol.CodeInternal, Message: "temporary server error; retrying"})
+		}
 		return
 	}
 
