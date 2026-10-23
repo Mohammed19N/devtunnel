@@ -55,3 +55,23 @@ func TestRateLimiterSweep(t *testing.T) {
 		t.Fatalf("len(buckets) = %d, want 1", n)
 	}
 }
+
+func TestAllowNPerKey(t *testing.T) {
+	l, _ := newTestLimiter(60)
+	for i := 0; i < 2; i++ {
+		if ok, _ := l.AllowN("a", 2); !ok {
+			t.Fatalf("a %d denied", i)
+		}
+	}
+	if ok, _ := l.AllowN("a", 2); ok {
+		t.Fatal("a third allowed")
+	}
+	for i := 0; i < 5; i++ {
+		if ok, _ := l.AllowN("b", 5); !ok {
+			t.Fatalf("b %d denied", i)
+		}
+	}
+	if ok, _ := l.AllowN("b", 5); ok {
+		t.Fatal("b sixth allowed")
+	}
+}

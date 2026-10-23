@@ -88,11 +88,17 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 		return
 	}
 	if r.URL.Path == continuePath {
-		if !s.cfg.BrowserWarning {
+		if !s.cfg.BrowserWarning && s.cfg.Directory == nil {
 			http.NotFound(w, r)
 			return
 		}
 		handleContinue(w, r, s.cfg.CookieSecret, s.cfg.PublicScheme == "https")
+		return
+	}
+	cloud := s.cfg.Directory != nil
+	// A banned host is refused even after its session is gone.
+	if cloud && s.bans.Load().banned(Account{}, label) {
+		renderPage(w, r, pageBanned, pageData{Host: r.Host})
 		return
 	}
 	t, ok := s.registry.Lookup(label)
@@ -100,17 +106,44 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 		renderPage(w, r, pageOffline, pageData{Host: r.Host})
 		return
 	}
-	if s.cfg.BrowserWarning && needsWarning(r, s.cfg.CookieSecret) {
-		renderPage(w, r, pageWarning, pageData{Host: r.Host, Continue: continuePath + "?to=" + url.QueryEscape(r.URL.RequestURI())})
+	acc := t.Account
+	warn, rate := s.cfg.BrowserWarning, s.cfg.RateLimit
+	if cloud {
+		if s.bans.Load().banned(acc, t.Name) {
+			renderPage(w, r, pageBanned, pageData{Host: r.Host})
+			return
+		}
+		warn = acc.Plan.Warning
+		if acc.Plan.RateLimit > 0 {
+			rate = acc.Plan.RateLimit
+		}
+	}
+	if warn && needsWarning(r, s.cfg.CookieSecret) {
+		d := pageData{Host: r.Host, Continue: continuePath + "?to=" + url.QueryEscape(r.URL.RequestURI())}
+		if cloud {
+			d.Owner = acc.Login
+		}
+		renderPage(w, r, pageWarning, d)
 		return
 	}
-	if s.limiter != nil {
-		if ok, retry := s.limiter.Allow(t.Name); !ok {
+	if s.meter != nil && (s.meter.Over(acc) || (acc.Plan.Name == PlanFree.Name && s.meter.FreeCapHit())) {
+		renderPage(w, r, pageBandwidth, pageData{Host: r.Host})
+		return
+	}
+	if rate > 0 && s.limiter != nil {
+		if ok, retry := s.limiter.AllowN(t.Name, rate); !ok {
 			secs := int((retry + time.Second - 1) / time.Second)
 			renderPage(w, r, pageRateLimited, pageData{Host: r.Host, RetryIn: max(secs, 1)})
 			return
 		}
 	}
 	t.requests.Add(1)
+	if s.meter != nil {
+		add := func(n int64) { s.meter.Add(acc, n) }
+		if r.Body != nil && r.Body != http.NoBody {
+			r.Body = &countingBody{ReadCloser: r.Body, add: add}
+		}
+		w = &countingWriter{ResponseWriter: w, add: add}
+	}
 	t.proxy.ServeHTTP(w, r)
 }

@@ -53,7 +53,18 @@ footer a{color:inherit;text-decoration:underline;text-underline-offset:2px}
 {{define "warning"}}{{template "head" .}}
 <div class="icon warn"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01"/></svg></div>
 <h1>You are about to visit {{.Host}}</h1>
-<p>This site is served through a Passway tunnel from someone's computer. Only continue if you know and trust who sent you this link. Never enter passwords or payment details unless you're sure.</p>
+{{if .Owner}}<p>You are about to visit a tunnel run by @{{.Owner}}.</p>
+{{end}}<p>This site is served through a Passway tunnel from someone's computer. Only continue if you know and trust who sent you this link. Never enter passwords or payment details unless you're sure.</p>
 <a class="btn" href="{{.Continue}}">Visit site</a>
 <p class="note">Developers: send the <code>Passway-Skip-Warning</code> header to skip this page.</p>
+{{template "foot" .}}{{end}}
+{{define "bandwidth"}}{{template "head" .}}
+<div class="icon warn"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></div>
+<h1>Bandwidth limit reached</h1>
+<p><strong>{{.Host}}</strong> has used its monthly bandwidth allowance. It will work again when the allowance resets next month or the owner upgrades.</p>
+{{template "foot" .}}{{end}}
+{{define "banned"}}{{template "head" .}}
+<div class="icon warn"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg></div>
+<h1>Tunnel disabled</h1>
+<p><strong>{{.Host}}</strong> has been disabled.</p>
 {{template "foot" .}}{{end}}

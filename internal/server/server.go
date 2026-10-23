@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"log/slog"
 	"net"
@@ -8,6 +9,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mohammed19n/passway/internal/protocol"
@@ -37,6 +40,8 @@ type Server struct {
 	registry *Registry
 	log      *slog.Logger
 	limiter  *RateLimiter // nil = unlimited
+	meter    *Meter       // nil unless Directory is set
+	bans     atomic.Pointer[banSet]
 }
 
 // New creates a Server from cfg, applying defaults.
@@ -71,8 +76,11 @@ func New(cfg Config) *Server {
 		cfg.Logger.Warn("no auth tokens configured: every client token is accepted (development only)")
 	}
 	s := &Server{cfg: cfg, registry: NewRegistry(cfg.NameHold), log: cfg.Logger}
-	if cfg.RateLimit > 0 {
+	if cfg.RateLimit > 0 || cfg.Directory != nil {
 		s.limiter = NewRateLimiter(cfg.RateLimit)
+	}
+	if cfg.Directory != nil {
+		s.meter = NewMeter(cfg.Directory, cfg.FreeBandwidthCap, 0, cfg.Logger)
 	}
 	return s
 }
@@ -84,6 +92,20 @@ func (s *Server) PublicURL(name string) string {
 		host = net.JoinHostPort(host, strconv.Itoa(s.cfg.PublicPort))
 	}
 	return s.cfg.PublicScheme + "://" + host
+}
+
+// RunBackground runs the usage meter and the ban poller until ctx ends, then
+// flushes the meter. Without a Directory it just waits for ctx. Call it once.
+func (s *Server) RunBackground(ctx context.Context) {
+	if s.cfg.Directory == nil {
+		<-ctx.Done()
+		return
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); s.meter.Run(ctx) }()
+	go func() { defer wg.Done(); s.runBanPoller(ctx) }()
+	wg.Wait()
 }
 
 // TunnelSnapshot describes one live tunnel for the dashboard.

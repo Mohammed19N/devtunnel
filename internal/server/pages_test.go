@@ -25,6 +25,8 @@ func TestRenderPageHTML(t *testing.T) {
 		{"offline", pageOffline, 502},
 		{"ratelimited", pageRateLimited, 429},
 		{"warning", pageWarning, 200},
+		{"bandwidth", pageBandwidth, 402},
+		{"banned", pageBanned, 403},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,6 +100,26 @@ func TestRenderPageHardeningHeaders(t *testing.T) {
 				!strings.Contains(h.Get("Content-Security-Policy"), "frame-ancestors 'none'") {
 				t.Errorf("kind %d accept %q: headers = %v", kind, accept, h)
 			}
+		}
+	}
+}
+
+func TestRenderPageOwnerAndPlain(t *testing.T) {
+	w := httptest.NewRecorder()
+	renderPage(w, pageReq("text/html"), pageWarning, pageData{Host: "a.x.dev", Continue: "/c", Owner: "u1login"})
+	if !strings.Contains(w.Body.String(), "You are about to visit a tunnel run by @u1login") {
+		t.Fatalf("owner missing: %s", w.Body)
+	}
+	w = httptest.NewRecorder()
+	renderPage(w, pageReq("text/html"), pageWarning, pageData{Host: "a.x.dev", Continue: "/c"})
+	if strings.Contains(w.Body.String(), "run by @") {
+		t.Fatal("owner line shown without owner")
+	}
+	for kind, want := range map[pageKind]string{pageBandwidth: "monthly bandwidth limit reached", pageBanned: "this tunnel has been disabled"} {
+		w = httptest.NewRecorder()
+		renderPage(w, pageReq("text/plain"), kind, pageData{Host: "a.x.dev"})
+		if strings.TrimSpace(w.Body.String()) != want {
+			t.Fatalf("plain = %q, want %q", w.Body, want)
 		}
 	}
 }

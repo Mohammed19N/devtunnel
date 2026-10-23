@@ -20,12 +20,15 @@ const (
 	pageOffline pageKind = iota
 	pageRateLimited
 	pageWarning
+	pageBandwidth
+	pageBanned
 )
 
 type pageData struct {
 	Host     string // r.Host as received
 	Continue string // warning only: "/_passway/continue?to=<escaped path>"
 	RetryIn  int    // rate-limited only: seconds
+	Owner    string // warning only: GitHub login of the tunnel's owner
 	Title    string // set by renderPage
 }
 
@@ -46,6 +49,12 @@ func renderPage(w http.ResponseWriter, r *http.Request, kind pageKind, d pageDat
 	case pageWarning:
 		status, name, d.Title = http.StatusOK, "warning", "Before you continue"
 		plain = "this tunnel is served from someone's computer; send the Passway-Skip-Warning header to skip this notice"
+	case pageBandwidth:
+		status, name, d.Title = http.StatusPaymentRequired, "bandwidth", "Bandwidth limit reached"
+		plain = "monthly bandwidth limit reached"
+	case pageBanned:
+		status, name, d.Title = http.StatusForbidden, "banned", "Tunnel disabled"
+		plain = "this tunnel has been disabled"
 	default:
 		status, name, d.Title = http.StatusBadGateway, "offline", "Tunnel offline"
 		plain = fmt.Sprintf("tunnel %s is offline", d.Host)

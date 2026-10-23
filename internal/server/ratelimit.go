@@ -34,12 +34,19 @@ func NewRateLimiter(perMinute int) *RateLimiter {
 	}
 }
 
-// Allow takes one token for key. When none is left it returns false and how long until one is.
+// Allow takes one token for key at the limiter's default rate. When none is
+// left it returns false and how long until one is.
 func (l *RateLimiter) Allow(key string) (ok bool, retryAfter time.Duration) {
+	return l.AllowN(key, l.perMinute)
+}
+
+// AllowN is Allow with a per-key rate: perMinute is the capacity and refill
+// for key's bucket.
+func (l *RateLimiter) AllowN(key string, perMinute int) (ok bool, retryAfter time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	capacity := float64(l.perMinute)
+	capacity := float64(perMinute)
 	rate := capacity / 60 // tokens per second
 
 	if now.Sub(l.lastSweep) >= sweepEvery {
