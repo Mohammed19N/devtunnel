@@ -83,6 +83,11 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
+`DynamicUser=yes` cannot read key files under `/etc/passway` unless they are
+world-readable, which a private key should not be. Use `LoadCredential=` to
+pass the certificate and key, or replace `DynamicUser` with a dedicated
+`User=`/`Group=` that owns them.
+
 ## Docker (placeholder)
 
 The official image ships in a later milestone. The command will look like:

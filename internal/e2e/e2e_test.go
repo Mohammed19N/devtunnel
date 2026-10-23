@@ -808,7 +808,15 @@ func TestCloudSignupLoginClaim(t *testing.T) {
 	tok := alice.newToken("laptop")
 
 	r1, _ := e.startClient(t, tok, "", nil)
-	if r1.Name == "" || !strings.HasSuffix(r1.URL, fmt.Sprintf(".localhost:%d", e.port)) {
+	alice0, err := e.store.UserByLogin(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subs, err := e.store.Subdomains(context.Background(), alice0.ID)
+	if err != nil || len(subs) != 1 || !subs[0].IsDefault {
+		t.Fatalf("stored subdomains: %+v, %v", subs, err)
+	}
+	if r1.Name != subs[0].Name || !strings.HasSuffix(r1.URL, fmt.Sprintf(".localhost:%d", e.port)) {
 		t.Fatalf("ready: %+v", r1)
 	}
 	host := fmt.Sprintf("%s.localhost:%d", r1.Name, e.port)
@@ -828,7 +836,7 @@ func TestCloudSignupLoginClaim(t *testing.T) {
 	if err := e.store.SetPlan(context.Background(), u.ID, "pro"); err != nil {
 		t.Fatal(err)
 	}
-	if code, body := alice.post("/dashboard/subdomains", url.Values{"name": {"acme"}}); code != 200 && code != 303 {
+	if code, body := alice.post("/dashboard/subdomains", url.Values{"name": {"acme"}}); code != http.StatusSeeOther {
 		t.Fatalf("claim: %d %s", code, body)
 	}
 	r2, _ := e.startClient(t, tok, "acme", nil)
@@ -836,6 +844,8 @@ func TestCloudSignupLoginClaim(t *testing.T) {
 		t.Fatalf("second tunnel: %+v", r2)
 	}
 	_, page := alice.get("/dashboard")
+	// Coupled to the dashboard template: each active tunnel is a row whose
+	// first cell is its URL.
 	if n := strings.Count(page, "<td>http://"); n != 2 {
 		t.Fatalf("dashboard shows %d tunnels, want 2:\n%s", n, page)
 	}
@@ -847,7 +857,9 @@ func TestCloudFreeSecondTunnelRefused(t *testing.T) {
 	e.startClient(t, tok, "", nil)
 
 	target, _ := url.Parse(e.local.URL)
-	err := client.Run(context.Background(), client.Config{Server: e.base, Token: tok, Name: "", Target: target, Logger: discard})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := client.Run(ctx, client.Config{Server: e.base, Token: tok, Name: "", Target: target, Logger: discard})
 	var pe *protocol.Error
 	if !errors.As(err, &pe) || pe.Code != protocol.CodeLimitReached ||
 		pe.Message != "tunnel limit reached: your free plan allows 1 concurrent tunnel(s)" {

@@ -30,8 +30,17 @@ cd devtunnel
 In one terminal, start the relay server:
 
 ```sh
-go run ./cmd/passway-server --domain localhost
+go run ./cmd/passway-server --self-hosted --domain localhost
 ```
+
+To try the cloud flow locally (accounts, dashboard, plans) instead:
+
+```sh
+go run ./cmd/passway-server --domain localhost --db ./passway.db --dev-login
+```
+
+then open http://localhost:8080/auth/dev?login=you to sign in, create a token
+under CLI tokens and run `passway login <token>`.
 
 In another, start something to expose on port 3000, for example:
 
@@ -113,10 +122,13 @@ every account gets a stable default subdomain.
 
 These numbers are placeholders until the final plans are set (Pro billing
 arrives in a later milestone; for now an operator sets plans with
-`passway-server admin set-plan`). A suspended account's tunnels are closed and
+`passway-server admin --db PATH set-plan <login> pro`). A suspended account's tunnels are closed and
 its tunnel hosts show a 403 page.
 
 ### Running Passway Cloud
+
+Like any relay it needs wildcard DNS and a wildcard TLS certificate for the
+base domain; see [docs/self-hosting.md](docs/self-hosting.md).
 
 `passway-server` runs in cloud mode by default: accounts, a dashboard on the
 base domain and plan limits, all backed by SQLite.
@@ -170,7 +182,8 @@ admin commands are in [docs/self-hosting.md](docs/self-hosting.md).
 
 ## Roadmap
 
-Accounts, plans and the dashboard work (milestone 3). Planned, not built yet: paid plans with billing, custom domains and an install script.
+Accounts, plans and the dashboard work (milestone 3). Planned, not built yet:
+paid plans with billing, custom domains and an install script.
 
 ## License
 
