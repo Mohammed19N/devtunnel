@@ -212,5 +212,5 @@ func planLine(r protocol.Ready) string {
 			parts = append(parts, fmt.Sprintf("%.1f GB/month", float64(r.Bandwidth)/(1<<30)))
 		}
 	}
-	return strings.Join(parts, " \u00b7 ")
+	return strings.Join(parts, " - ")
 }

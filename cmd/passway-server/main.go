@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -127,6 +128,12 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		}
 		if *cf.devLogin && *domain != "localhost" && !strings.HasSuffix(*domain, ".localhost") {
 			return usageError{errors.New("--dev-login is only allowed on a localhost domain")}
+		}
+		// The dashboard is only routed on Host == --domain.
+		if *cf.baseURL != "" {
+			if u, err := url.Parse(*cf.baseURL); err != nil || !strings.EqualFold(u.Hostname(), *domain) {
+				return usageError{fmt.Errorf("--base-url %q must be on --domain %s", *cf.baseURL, *domain)}
+			}
 		}
 	} else if strings.TrimSpace(*tokens) == "" && *cf.db == "" && !*open && *domain != "localhost" && !strings.HasSuffix(*domain, ".localhost") {
 		return fmt.Errorf("refusing to run an open relay on %s: set --tokens or pass --open", *domain)
@@ -245,6 +252,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 			}
 			return out
 		}
+		dcfg.Disconnect = func(id string, tokenID int64) { srv.CloseTokenTunnels(id, tokenID) }
 		dash, err := dashboard.New(dcfg)
 		if err != nil {
 			closeListeners(plainLn, tlsLn)
@@ -352,7 +360,7 @@ func redirectHandler(httpsPort int) http.Handler {
 }
 
 // dashboardConfig maps the cloud flags to a dashboard.Config; the caller adds
-// Tunnels and Logger.
+// Tunnels, Disconnect and Logger.
 func (cf cloudOpts) dashboardConfig(st *store.Store, base, secret string) dashboard.Config {
 	return dashboard.Config{
 		Store:              st,

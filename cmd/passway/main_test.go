@@ -398,7 +398,7 @@ func TestRunHTTPPlanLine(t *testing.T) {
 		codeCh <- run(ctx, []string{"http", "--server", su, "--inspect=false", local.URL}, &out, &errb, cp)
 	}()
 	waitFor(t, "Plan line", func() bool {
-		return strings.Contains(out.String(), "Plan         Free \u00b7 60 req/min \u00b7 1 GB/month")
+		return strings.Contains(out.String(), "Plan         Free - 60 req/min - 1 GB/month")
 	})
 	stopRun(t, cancel, codeCh, &errb)
 }
@@ -457,11 +457,11 @@ func TestPlanLine(t *testing.T) {
 		r    protocol.Ready
 		want string
 	}{
-		{protocol.Ready{Plan: "free", RateLimit: 60, Bandwidth: 1 << 30}, "Free \u00b7 60 req/min \u00b7 1 GB/month"},
-		{protocol.Ready{Plan: "pro", RateLimit: 600, Bandwidth: 50 << 30}, "Pro \u00b7 600 req/min \u00b7 50 GB/month"},
+		{protocol.Ready{Plan: "free", RateLimit: 60, Bandwidth: 1 << 30}, "Free - 60 req/min - 1 GB/month"},
+		{protocol.Ready{Plan: "pro", RateLimit: 600, Bandwidth: 50 << 30}, "Pro - 600 req/min - 50 GB/month"},
 		{protocol.Ready{Plan: "unlimited"}, ""},
 		{protocol.Ready{}, ""},
-		{protocol.Ready{Plan: "free", RateLimit: 60, Bandwidth: 3 << 29}, "Free \u00b7 60 req/min \u00b7 1.5 GB/month"},
+		{protocol.Ready{Plan: "free", RateLimit: 60, Bandwidth: 3 << 29}, "Free - 60 req/min - 1.5 GB/month"},
 	} {
 		if got := planLine(tc.r); got != tc.want {
 			t.Errorf("planLine(%+v) = %q, want %q", tc.r, got, tc.want)

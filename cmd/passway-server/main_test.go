@@ -222,6 +222,23 @@ func TestCloudModeRequiresFlags(t *testing.T) {
 	}
 }
 
+// The dashboard is only routed on Host == --domain, so --base-url must point there.
+func TestBaseURLMustBeDomain(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "p.db")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // if validation passes, run returns at once instead of serving
+	for _, base := range []string{"http://dash.localhost:8080", "http://example.test"} {
+		err := run(ctx, []string{"--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login", "--base-url", base}, io.Discard, nil)
+		if err == nil || !strings.Contains(err.Error(), "--base-url") || exitCode(err) != 2 {
+			t.Errorf("--base-url %s: err = %v, exit %d; want usage error mentioning --base-url", base, err, exitCode(err))
+		}
+	}
+	_, stop := start(t, []string{"--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login", "--base-url", "http://LocalHost:9999"})
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCloudSecretFromEnv(t *testing.T) {
 	t.Setenv("PASSWAY_GITHUB_CLIENT_SECRET", "s")
 	db := filepath.Join(t.TempDir(), "p.db")

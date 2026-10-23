@@ -9,6 +9,7 @@ import (
 	io_fs "io/fs"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/mohammed19n/passway/internal/server/store"
 )
@@ -17,6 +18,7 @@ const adminUsage = `usage: passway-server admin --db PATH <command>
   ban user <login> [--reason R]    ban host <label> [--reason R]
   unban user <login>               unban host <label>
   set-plan <login> free|pro        whois <label>
+  admit <login>
   token create <name>              token list        token revoke <id>`
 
 // runAdmin runs one admin command against the SQLite database directly and
@@ -39,7 +41,10 @@ func runAdmin(ctx context.Context, args []string, out io.Writer) error {
 	if len(rest) == 0 {
 		return usageError{errors.New(adminUsage)}
 	}
-	if _, err := os.Stat(*db); errors.Is(err, io_fs.ErrNotExist) {
+	// Only "token create" may create the database, so a fresh self-hosted
+	// install can make its first token before the server ever ran.
+	creating := len(rest) >= 2 && rest[0] == "token" && rest[1] == "create"
+	if _, err := os.Stat(*db); errors.Is(err, io_fs.ErrNotExist) && !creating {
 		return fmt.Errorf("database %s does not exist", *db)
 	}
 	st, err := store.Open(*db)
@@ -56,6 +61,11 @@ func runAdmin(ctx context.Context, args []string, out io.Writer) error {
 		return a.unban(rest)
 	case "set-plan":
 		return a.setPlan(rest)
+	case "admit":
+		if len(rest) != 1 {
+			return usageError{errors.New("usage: admin admit <login>")}
+		}
+		return a.admit(rest[0])
 	case "whois":
 		if len(rest) != 1 {
 			return usageError{errors.New("usage: admin whois <label>")}
@@ -152,14 +162,27 @@ func (a admin) setPlan(args []string) error {
 	if err := a.st.SetPlan(a.ctx, u.ID, args[1]); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.out, "@%s is now on the %s plan\n", u.Login, args[1])
+	fmt.Fprintf(a.out, "@%s is now on the %s plan\n", u.Login, strings.ToUpper(args[1][:1])+args[1][1:])
+	return nil
+}
+
+// admit takes a user off the waitlist.
+func (a admin) admit(login string) error {
+	u, err := a.user(login)
+	if err != nil {
+		return err
+	}
+	if err := a.st.SetWaitlisted(a.ctx, u.ID, false); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "admitted @%s\n", u.Login)
 	return nil
 }
 
 func (a admin) whois(label string) error {
 	id, err := a.st.SubdomainOwner(a.ctx, label)
 	if errors.Is(err, store.ErrNotFound) {
-		fmt.Fprintf(a.out, "%s → unclaimed\n", label)
+		fmt.Fprintf(a.out, "%s -> unclaimed\n", label)
 		return nil
 	}
 	if err != nil {
@@ -169,7 +192,7 @@ func (a admin) whois(label string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(a.out, "%s → @%s (%s, user %d)\n", label, u.Login, u.Plan, u.ID)
+	fmt.Fprintf(a.out, "%s -> @%s (%s, user %d)\n", label, u.Login, u.Plan, u.ID)
 	return nil
 }
 
