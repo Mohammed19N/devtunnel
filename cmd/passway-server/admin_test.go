@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -115,5 +116,48 @@ func TestAdminTokens(t *testing.T) {
 	}
 	if _, err := adm(t, db, "token", "revoke", "1"); exitCode(err) != 1 {
 		t.Fatalf("second revoke err = %v, want exit 1", err)
+	}
+}
+
+func TestAdminBanSurvivesRename(t *testing.T) {
+	db, st, u := adminDB(t)
+	defer st.Close()
+	ctx := context.Background()
+	if _, err := adm(t, db, "ban", "user", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	u2, _, err := st.UpsertGitHubUser(ctx, store.User{GitHubID: u.GitHubID, Login: "alice2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := st.IsUserBanned(ctx, u2); !b {
+		t.Fatal("ban lost after rename")
+	}
+	if _, err := adm(t, db, "unban", "user", "alice2"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := st.IsUserBanned(ctx, u2); b {
+		t.Fatal("still banned after unban")
+	}
+}
+
+func TestAdminHelp(t *testing.T) {
+	var out bytes.Buffer
+	err := runAdmin(context.Background(), []string{"-h"}, &out)
+	if exitCode(err) != 0 || !strings.Contains(out.String(), "usage: passway-server admin") {
+		t.Fatalf("err = %v, out = %q; want usage and exit 0", err, out.String())
+	}
+}
+
+func TestAdminMissingDB(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "nope.db")
+	for _, args := range [][]string{{"whois", "x"}, {"token", "list"}, {"ban", "user", "x"}} {
+		_, err := adm(t, db, args...)
+		if err == nil || err.Error() != "database "+db+" does not exist" || exitCode(err) != 1 {
+			t.Errorf("%v: err = %v, want missing-database error, exit 1", args, err)
+		}
+	}
+	if _, err := os.Stat(db); err == nil {
+		t.Error("admin created the database")
 	}
 }

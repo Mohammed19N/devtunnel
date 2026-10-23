@@ -91,7 +91,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (required with --tls-addr)")
 	tlsKey := fs.String("tls-key", "", "TLS key file (required with --tls-addr)")
 	tokens := fs.String("tokens", "", "comma-separated accepted tokens (empty = open relay; needs --open unless domain is localhost)")
-	open := fs.Bool("open", false, "allow running without --tokens on a non-localhost domain")
+	open := fs.Bool("open", false, "allow running without --tokens on a non-localhost domain (self-hosted only; ignored in cloud mode)")
 	publicPortFlag := fs.Int("public-port", 0, "port shown in public URLs (0 = the listener's port)")
 	maxConns := fs.Int("max-conns-per-tunnel", 64, "max concurrent proxied connections per tunnel")
 	browserWarning := fs.Bool("browser-warning", false, "show a one-time warning page to browser visitors of tunnels")
@@ -236,23 +236,16 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 				base += ":" + strconv.Itoa(port)
 			}
 		}
-		dash, err := dashboard.New(dashboard.Config{
-			Store:              st,
-			BaseURL:            base,
-			GitHubClientID:     *cf.ghID,
-			GitHubClientSecret: secret,
-			MinGitHubAge:       *cf.minGitHubAge,
-			FreeSignupCap:      *cf.freeSignupCap,
-			DevLogin:           *cf.devLogin,
-			Logger:             log,
-			Tunnels: func(id string) []dashboard.TunnelInfo {
-				var out []dashboard.TunnelInfo
-				for _, t := range srv.TunnelsFor(id) {
-					out = append(out, dashboard.TunnelInfo{URL: t.URL, ClientVersion: t.ClientVersion, ConnectedAt: t.ConnectedAt, Requests: t.Requests})
-				}
-				return out
-			},
-		})
+		dcfg := cf.dashboardConfig(st, base, secret)
+		dcfg.Logger = log
+		dcfg.Tunnels = func(id string) []dashboard.TunnelInfo {
+			var out []dashboard.TunnelInfo
+			for _, t := range srv.TunnelsFor(id) {
+				out = append(out, dashboard.TunnelInfo{URL: t.URL, ClientVersion: t.ClientVersion, ConnectedAt: t.ConnectedAt, Requests: t.Requests})
+			}
+			return out
+		}
+		dash, err := dashboard.New(dcfg)
 		if err != nil {
 			closeListeners(plainLn, tlsLn)
 			return err
@@ -263,9 +256,12 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	}
 	srv = server.New(cfg)
 	if cloud {
+		// Registered after the st.Close defer, so on return: cancel, wait for
+		// RunBackground's final meter flush, then close the store.
 		bgCtx, bgStop := context.WithCancel(ctx)
-		defer bgStop()
-		go srv.RunBackground(bgCtx)
+		bgDone := make(chan struct{})
+		go func() { defer close(bgDone); srv.RunBackground(bgCtx) }()
+		defer func() { bgStop(); <-bgDone }()
 	}
 
 	var servers []*http.Server
@@ -353,4 +349,18 @@ func redirectHandler(httpsPort int) http.Handler {
 		}
 		http.Redirect(w, r, "https://"+host+r.URL.RequestURI(), http.StatusPermanentRedirect)
 	})
+}
+
+// dashboardConfig maps the cloud flags to a dashboard.Config; the caller adds
+// Tunnels and Logger.
+func (cf cloudOpts) dashboardConfig(st *store.Store, base, secret string) dashboard.Config {
+	return dashboard.Config{
+		Store:              st,
+		BaseURL:            base,
+		GitHubClientID:     *cf.ghID,
+		GitHubClientSecret: secret,
+		MinGitHubAge:       *cf.minGitHubAge,
+		FreeSignupCap:      *cf.freeSignupCap,
+		DevLogin:           *cf.devLogin,
+	}
 }

@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -271,6 +272,11 @@ func TestMinGitHubAgeDefault(t *testing.T) {
 
 func TestSelfHostedDBTokens(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "p.db")
+	st0, err := store.Open(db) // admin needs an existing database
+	if err != nil {
+		t.Fatal(err)
+	}
+	st0.Close()
 	var out bytes.Buffer
 	if err := runAdmin(context.Background(), []string{"--db", db, "token", "create", "laptop"}, &out); err != nil {
 		t.Fatal(err)
@@ -297,27 +303,7 @@ func TestSelfHostedDBTokens(t *testing.T) {
 	st.Close()
 
 	addrs, stop := start(t, []string{"--self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db})
-	target, _ := url.Parse("http://127.0.0.1:1")
-	connect := func(token string) error {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		ready := make(chan struct{}, 1)
-		errc := make(chan error, 1)
-		go func() {
-			errc <- client.Run(ctx, client.Config{
-				Server: "http://localhost:" + addrs[0][strings.LastIndex(addrs[0], ":")+1:], Token: token, Target: target,
-				Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-				OnReady: func(protocol.Ready) { ready <- struct{}{}; cancel() },
-			})
-		}()
-		select {
-		case <-ready:
-			<-errc
-			return nil
-		case err := <-errc:
-			return err
-		}
-	}
+	connect := func(token string) error { return connectOnce(addrs[0], token) }
 	if err := connect(tok); err != nil {
 		t.Errorf("admin token: %v", err)
 	}
@@ -353,5 +339,128 @@ func TestCookieSecretPersisted(t *testing.T) {
 	a, b := read(), read()
 	if len(a) != 32 || !bytes.Equal(a, b) {
 		t.Fatalf("secrets %x vs %x, want equal 32 bytes", a, b)
+	}
+}
+
+func TestSelfHostedStaticAndDBTokens(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "p.db")
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminTok, _, err := st.CreateToken(context.Background(), 0, "laptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	addrs, stop := start(t, []string{"--self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--tokens", "x"})
+	for _, tok := range []string{"x", adminTok} {
+		if err := connectOnce(addrs[0], tok); err != nil {
+			t.Errorf("token %.6q: %v", tok, err)
+		}
+	}
+	if err := connectOnce(addrs[0], "nope"); err == nil {
+		t.Error("unknown token accepted")
+	}
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDashboardConfigMinGitHubAge(t *testing.T) {
+	for _, c := range []struct {
+		args []string
+		want time.Duration
+	}{{nil, 168 * time.Hour}, {[]string{"--min-github-age", "1h"}, time.Hour}} {
+		fs := flag.NewFlagSet("x", flag.ContinueOnError)
+		cf := cloudFlags(fs)
+		if err := fs.Parse(c.args); err != nil {
+			t.Fatal(err)
+		}
+		if got := cf.dashboardConfig(nil, "http://localhost", "s").MinGitHubAge; got != c.want {
+			t.Errorf("%v: MinGitHubAge = %v, want %v", c.args, got, c.want)
+		}
+	}
+}
+
+func TestCloudFinalFlushBeforeStoreClose(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "p.db")
+	ctx := context.Background()
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _, _ := st.UpsertGitHubUser(ctx, store.User{GitHubID: 1, Login: "bob"})
+	tok, _, _ := st.CreateToken(ctx, u.ID, "cli")
+	if err := st.ClaimSubdomain(ctx, u.ID, "acme", true, 1); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	addrs, stop := start(t, []string{"--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login"})
+	port := addrs[0][strings.LastIndex(addrs[0], ":")+1:]
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, strings.Repeat("x", 4096))
+	}))
+	defer local.Close()
+	target, _ := url.Parse(local.URL)
+	cctx, ccancel := context.WithCancel(ctx)
+	ready := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = client.Run(cctx, client.Config{Server: "http://localhost:" + port, Token: tok, Name: "acme", Target: target,
+			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), OnReady: func(protocol.Ready) { ready <- struct{}{} }})
+	}()
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tunnel never ready")
+	}
+	req, _ := http.NewRequest("GET", "http://"+addrs[0]+"/", nil)
+	req.Host = "acme.localhost:" + port
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	ccancel()
+	<-done
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	used, err := st.Usage(ctx, u.ID, time.Now().UTC().Format("2006-01"))
+	if err != nil || used < 4096 {
+		t.Fatalf("usage = %d, %v; want the final meter flush to have landed (>= 4096)", used, err)
+	}
+}
+
+// connectOnce connects a tunnel with token and returns nil once it is ready.
+func connectOnce(addr, token string) error {
+	target, _ := url.Parse("http://127.0.0.1:1")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ready := make(chan struct{}, 1)
+	errc := make(chan error, 1)
+	go func() {
+		errc <- client.Run(ctx, client.Config{
+			Server: "http://localhost:" + addr[strings.LastIndex(addr, ":")+1:], Token: token, Target: target,
+			Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+			OnReady: func(protocol.Ready) { ready <- struct{}{}; cancel() },
+		})
+	}()
+	select {
+	case <-ready:
+		<-errc
+		return nil
+	case err := <-errc:
+		return err
 	}
 }

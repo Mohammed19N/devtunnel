@@ -6,6 +6,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	io_fs "io/fs"
+	"os"
 	"strconv"
 
 	"github.com/mohammed19n/passway/internal/server/store"
@@ -24,6 +26,10 @@ func runAdmin(ctx context.Context, args []string, out io.Writer) error {
 	fs.SetOutput(io.Discard)
 	db := fs.String("db", "", "SQLite database path (required)")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprintln(out, adminUsage)
+			return err
+		}
 		return usageError{err}
 	}
 	if *db == "" {
@@ -32,6 +38,9 @@ func runAdmin(ctx context.Context, args []string, out io.Writer) error {
 	rest := fs.Args()
 	if len(rest) == 0 {
 		return usageError{errors.New(adminUsage)}
+	}
+	if _, err := os.Stat(*db); errors.Is(err, io_fs.ErrNotExist) {
+		return fmt.Errorf("database %s does not exist", *db)
 	}
 	st, err := store.Open(*db)
 	if err != nil {
