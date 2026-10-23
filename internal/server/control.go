@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/coder/websocket"
@@ -163,10 +164,6 @@ func (s *Server) claimCloud(ctx context.Context, acc Account, hello protocol.Hel
 		PlanName:   acc.Plan.Name,
 		MaxTunnels: acc.Plan.MaxTunnels,
 	}
-	if acc.Plan.MaxTunnels > 0 && s.registry.CountAccount(acc.ID, hello.SessionID) >= acc.Plan.MaxTunnels {
-		return nil, &protocol.Error{Code: protocol.CodeLimitReached,
-			Message: fmt.Sprintf("tunnel limit reached: your %s plan allows %d concurrent tunnel(s)", acc.Plan.Name, acc.Plan.MaxTunnels)}
-	}
 
 	if hello.Name != "" {
 		owned, err := dir.Owns(ctx, acc, hello.Name)
@@ -189,19 +186,24 @@ func (s *Server) claimCloud(ctx context.Context, acc Account, hello protocol.Hel
 	if err != nil {
 		return nil, s.transient("names", err)
 	}
-	cands := make([]string, 0, len(names)+1)
-	if p := hello.PreferredName; p != "" {
-		if owned, err := dir.Owns(ctx, acc, p); err != nil {
-			return nil, s.transient("ownership check", err)
-		} else if owned {
-			cands = append(cands, p)
+	cands := make([]string, 0, len(names))
+	if p := hello.PreferredName; p != "" && slices.Contains(names, p) {
+		cands = append(cands, p)
+	}
+	for _, n := range names {
+		if n != hello.PreferredName || len(cands) == 0 || cands[0] != n {
+			cands = append(cands, n)
 		}
 	}
-	cands = append(cands, names...)
 	for _, name := range cands {
+		if err := ValidateName(name); err != nil {
+			s.log.Debug("skipping invalid owned name", "name", name, "err", err)
+			continue
+		}
 		if b, err := dir.Banned(ctx, acc, name); err != nil {
 			return nil, s.transient("ban check", err)
 		} else if b {
+			s.log.Debug("skipping banned name", "name", name)
 			continue
 		}
 		req.Name = name

@@ -106,9 +106,15 @@ func (r *Registry) Claim(req ClaimRequest, t *Tunnel) (replaced *Tunnel, err err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if req.MaxTunnels > 0 && r.countAccount(req.AccountID, req.SessionID) >= req.MaxTunnels {
-		return nil, &protocol.Error{Code: protocol.CodeLimitReached,
-			Message: fmt.Sprintf("tunnel limit reached: your %s plan allows %d concurrent tunnel(s)", req.PlanName, req.MaxTunnels)}
+	if req.MaxTunnels > 0 {
+		n := r.countAccount(req.AccountID, "")
+		// Taking over the same session's active tunnel replaces it, so it is not extra.
+		if cur, ok := r.active[req.Name]; ok && req.Name != "" && cur.SessionID == req.SessionID && cur.Account.ID == req.AccountID {
+			n--
+		}
+		if n >= req.MaxTunnels {
+			return nil, limitError(req.PlanName, req.MaxTunnels)
+		}
 	}
 
 	if req.Name != "" {
@@ -179,6 +185,12 @@ func (r *Registry) All() []*Tunnel {
 		out = append(out, t)
 	}
 	return out
+}
+
+// limitError is the error for a plan whose concurrent-tunnel limit is reached.
+func limitError(plan string, max int) *protocol.Error {
+	return &protocol.Error{Code: protocol.CodeLimitReached,
+		Message: fmt.Sprintf("tunnel limit reached: your %s plan allows %d concurrent tunnel(s)", plan, max)}
 }
 
 // countAccount counts active tunnels of accountID outside exceptSession. Caller holds mu.

@@ -2,6 +2,8 @@ package server
 
 import (
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,5 +176,62 @@ func TestClaimEnforcesAccountLimit(t *testing.T) {
 	// Another account is unaffected.
 	if _, err := r.Claim(ClaimRequest{Name: "xyz", SessionID: "C", AccountID: "u2", MaxTunnels: 1}, &Tunnel{Account: Account{ID: "u2"}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClaimSameSessionOtherNameCounts(t *testing.T) {
+	r, _ := newTestRegistry()
+	acc := Account{ID: "u1"}
+	req := func(name string) ClaimRequest {
+		return ClaimRequest{Name: name, SessionID: "S", AccountID: "u1", PlanName: "free", MaxTunnels: 1}
+	}
+	if _, err := r.Claim(req("aaa"), &Tunnel{Account: acc}); err != nil {
+		t.Fatal(err)
+	}
+	wantCode(t, claimErr(r, req("bbb"), &Tunnel{Account: acc}), protocol.CodeLimitReached)
+	if _, err := r.Claim(req("aaa"), &Tunnel{Account: acc}); err != nil {
+		t.Fatalf("takeover of own name: %v", err)
+	}
+}
+
+func TestClaimConcurrentRespectsLimit(t *testing.T) {
+	for _, max := range []int{1, 3} {
+		t.Run(fmt.Sprintf("max%d", max), func(t *testing.T) {
+			r, _ := newTestRegistry()
+			const n = 20
+			start := make(chan struct{})
+			errs := make(chan error, n)
+			var wg sync.WaitGroup
+			for i := 0; i < n; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-start
+					_, err := r.Claim(ClaimRequest{
+						Name: fmt.Sprintf("name-%d", i), SessionID: fmt.Sprintf("sess-%d", i),
+						AccountID: "u1", PlanName: "free", MaxTunnels: max,
+					}, &Tunnel{Account: Account{ID: "u1"}})
+					errs <- err
+				}()
+			}
+			close(start)
+			wg.Wait()
+			close(errs)
+			ok, limited := 0, 0
+			for err := range errs {
+				var pe *protocol.Error
+				switch {
+				case err == nil:
+					ok++
+				case errors.As(err, &pe) && pe.Code == protocol.CodeLimitReached:
+					limited++
+				default:
+					t.Errorf("unexpected %v", err)
+				}
+			}
+			if ok != max || limited != n-max {
+				t.Fatalf("ok=%d limited=%d, want %d and %d", ok, limited, max, n-max)
+			}
+		})
 	}
 }

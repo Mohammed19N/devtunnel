@@ -490,10 +490,11 @@ func (fakeDir) BannedLists(context.Context) ([]string, []string, error) { return
 
 // fakeDirectory is an in-memory Directory for handshake tests.
 type fakeDirectory struct {
-	mu     sync.Mutex
-	acc    Account
-	names  []string
-	banned map[string]bool // "" = the account itself
+	mu       sync.Mutex
+	acc      Account
+	names    []string
+	banned   map[string]bool // "" = the account itself
+	namesErr error
 }
 
 func newFakeDirectory(plan Plan, names ...string) *fakeDirectory {
@@ -506,7 +507,9 @@ func (d *fakeDirectory) Authenticate(_ context.Context, token string) (Account, 
 	}
 	return d.acc, nil
 }
-func (d *fakeDirectory) Names(context.Context, Account) ([]string, error) { return d.names, nil }
+func (d *fakeDirectory) Names(context.Context, Account) ([]string, error) {
+	return d.names, d.namesErr
+}
 func (d *fakeDirectory) Owns(_ context.Context, _ Account, name string) (bool, error) {
 	for _, n := range d.names {
 		if n == name {
@@ -669,5 +672,31 @@ func TestSelfHostedUnchanged(t *testing.T) {
 		if resp.Ready == nil || resp.Ready.Plan != "" || resp.Ready.RateLimit != 0 || resp.Ready.Bandwidth != 0 {
 			t.Fatalf("got %+v / %+v", resp.Ready, resp.Error)
 		}
+	}
+}
+
+func TestCloudPreferredName(t *testing.T) {
+	_, ts := newCloudServer(t, newFakeDirectory(PlanPro, "first-one", "second-one"))
+	h := hello("", "s1")
+	h.PreferredName = "second-one"
+	resp, _ := dialRaw(t, ts, h)
+	if resp.Ready == nil || resp.Ready.Name != "second-one" {
+		t.Fatalf("owned preferred: %+v", resp)
+	}
+	h = hello("", "s2")
+	h.PreferredName = "not-mine"
+	resp, _ = dialRaw(t, ts, h)
+	if resp.Ready == nil || resp.Ready.Name != "first-one" {
+		t.Fatalf("unowned preferred: %+v", resp)
+	}
+}
+
+func TestCloudDirectoryErrorIsRetryable(t *testing.T) {
+	d := newFakeDirectory(PlanFree, "quick-otter-42")
+	d.namesErr = errors.New("db down")
+	_, ts := newCloudServer(t, d)
+	resp, _ := dialRaw(t, ts, hello("", "s1"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeInternal || protocol.IsFatal(resp.Error) {
+		t.Fatalf("got %+v", resp.Error)
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mohammed19n/passway/internal/config"
+	"github.com/mohammed19n/passway/internal/protocol"
 	"github.com/mohammed19n/passway/internal/server"
 )
 
@@ -355,7 +356,7 @@ func TestRunHTTPTokenPrecedence(t *testing.T) {
 }
 
 // cloudDir is a minimal server.Directory for CLI tests: one Free account that owns one name.
-type cloudDir struct{}
+type cloudDir struct{ banned bool }
 
 func (cloudDir) Authenticate(context.Context, string) (server.Account, error) {
 	return server.Account{ID: "u1", Login: "alice", Plan: server.PlanFree}, nil
@@ -366,17 +367,19 @@ func (cloudDir) Names(context.Context, server.Account) ([]string, error) {
 func (cloudDir) Owns(_ context.Context, _ server.Account, n string) (bool, error) {
 	return n == "quick-otter-42", nil
 }
-func (cloudDir) Banned(context.Context, server.Account, string) (bool, error) { return false, nil }
-func (cloudDir) AddUsage(context.Context, server.Account, int64) error        { return nil }
-func (cloudDir) Usage(context.Context, server.Account) (int64, error)         { return 0, nil }
-func (cloudDir) PlanUsage(context.Context, string) (int64, error)             { return 0, nil }
-func (cloudDir) BannedLists(context.Context) ([]string, []string, error)      { return nil, nil, nil }
+func (d cloudDir) Banned(context.Context, server.Account, string) (bool, error) { return d.banned, nil }
+func (cloudDir) AddUsage(context.Context, server.Account, int64) error          { return nil }
+func (cloudDir) Usage(context.Context, server.Account) (int64, error)           { return 0, nil }
+func (cloudDir) PlanUsage(context.Context, string) (int64, error)               { return 0, nil }
+func (cloudDir) BannedLists(context.Context) ([]string, []string, error)        { return nil, nil, nil }
 
-func startCloudEnv(t *testing.T) string {
+func startCloudEnv(t *testing.T) string { return startCloudEnvDir(t, cloudDir{}) }
+
+func startCloudEnvDir(t *testing.T, d cloudDir) string {
 	t.Helper()
 	ts := httptest.NewUnstartedServer(nil)
 	port := ts.Listener.Addr().(*net.TCPAddr).Port
-	ts.Config.Handler = server.New(server.Config{Domain: "localhost", PublicScheme: "http", PublicPort: port, Directory: cloudDir{}})
+	ts.Config.Handler = server.New(server.Config{Domain: "localhost", PublicScheme: "http", PublicPort: port, Directory: d})
 	ts.Start()
 	t.Cleanup(ts.Close)
 	return fmt.Sprintf("http://localhost:%d", port)
@@ -418,4 +421,49 @@ func TestRunHTTPFatalMessage(t *testing.T) {
 		t.Fatalf("code=%d stderr=%q, want %q", code, errb.String(), want)
 	}
 	stopRun(t, cancel, codeCh, &err1)
+}
+
+func TestRunHTTPFatalMessageOtherCodes(t *testing.T) {
+	local := startLocal(t)
+	cases := []struct {
+		name string
+		dir  cloudDir
+		args []string
+		want string
+	}{
+		{"name_not_owned", cloudDir{}, []string{"--name", "other-name"}, "error: you don't own \"other-name\"; claim it in the dashboard\nmanage your account at %s/dashboard\n"},
+		{"banned", cloudDir{banned: true}, nil, "error: account suspended\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			su := startCloudEnvDir(t, tc.dir)
+			args := append([]string{"http", "--server", su, "--inspect=false", local.URL}, tc.args...)
+			var out, errb bytes.Buffer
+			code := run(context.Background(), args, &out, &errb, cfgPath(t))
+			want := tc.want
+			if strings.Contains(want, "%s") {
+				want = fmt.Sprintf(want, su)
+			}
+			if code != 1 || errb.String() != want {
+				t.Fatalf("code=%d stderr=%q, want %q", code, errb.String(), want)
+			}
+		})
+	}
+}
+
+func TestPlanLine(t *testing.T) {
+	for _, tc := range []struct {
+		r    protocol.Ready
+		want string
+	}{
+		{protocol.Ready{Plan: "free", RateLimit: 60, Bandwidth: 1 << 30}, "Free \u00b7 60 req/min \u00b7 1 GB/month"},
+		{protocol.Ready{Plan: "pro", RateLimit: 600, Bandwidth: 50 << 30}, "Pro \u00b7 600 req/min \u00b7 50 GB/month"},
+		{protocol.Ready{Plan: "unlimited"}, ""},
+		{protocol.Ready{}, ""},
+		{protocol.Ready{Plan: "free", RateLimit: 60, Bandwidth: 3 << 29}, "Free \u00b7 60 req/min \u00b7 1.5 GB/month"},
+	} {
+		if got := planLine(tc.r); got != tc.want {
+			t.Errorf("planLine(%+v) = %q, want %q", tc.r, got, tc.want)
+		}
+	}
 }
