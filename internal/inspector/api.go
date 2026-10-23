@@ -22,6 +22,9 @@ var pingInterval = 15 * time.Second
 
 const maxEditBody = 16 << 20
 
+// indexCSP locks the page down to its own inline code and same-origin API calls.
+const indexCSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; frame-ancestors 'none'"
+
 // UI returns the loopback-only HTTP handler for the inspector page and API.
 func (in *Inspector) UI() http.Handler {
 	mux := http.NewServeMux()
@@ -29,7 +32,7 @@ func (in *Inspector) UI() http.Handler {
 		h := w.Header()
 		h.Set("Content-Type", "text/html; charset=utf-8")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		h.Set("Content-Security-Policy", indexCSP)
 		w.Write(indexHTML)
 	})
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +40,8 @@ func (in *Inspector) UI() http.Handler {
 		writeJSON(w, 200, struct {
 			PublicURL string `json:"public_url"`
 			Target    string `json:"target"`
-		}{in.base(), t})
+			Capacity  int    `json:"capacity"`
+		}{in.base(), t, in.store.Capacity()})
 	})
 	mux.HandleFunc("GET /api/requests", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, in.store.List())

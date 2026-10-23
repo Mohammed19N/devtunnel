@@ -110,6 +110,9 @@ func (s *Store) Add(e *Exchange) int64 {
 	return e.ID
 }
 
+// Capacity returns the maximum number of exchanges held.
+func (s *Store) Capacity() int { return s.cap }
+
 // Get returns the exchange with the given id, if still held.
 func (s *Store) Get(id int64) (*Exchange, bool) {
 	s.mu.Lock()

@@ -538,8 +538,10 @@ function b64bytes(s) {
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
 }
-function decodeText(bytes) {
-  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return null; }
+// decodeText returns the UTF-8 text of bytes, or null if they are not valid UTF-8.
+// For a truncated body, stream mode drops a multibyte sequence cut off at the end.
+function decodeText(bytes, truncated) {
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes, { stream: !!truncated }); } catch { return null; }
 }
 function splitUri(u) {
   const i = u.indexOf('?');
@@ -640,7 +642,8 @@ const S = {
   list: [],            // summaries, newest first
   byId: new Map(),
   rows: new Map(),     // id -> row element
-  details: new Map(),  // id -> Exchange (immutable once captured)
+  details: new Map(),  // id -> Exchange (immutable once captured), small LRU
+  cap: 500,            // store capacity, from /api/status
   sel: 0,
   tab: 'request',
   filter: '',
@@ -679,6 +682,7 @@ async function pollStatus() {
     if (r.ok) {
       const prev = S.status.public_url;
       S.status = await r.json();
+      if (S.status.capacity > 0 && S.status.capacity !== S.cap) { S.cap = S.status.capacity; if (trim()) renderList(); }
       renderStatus();
       if (S.status.public_url !== prev && S.sel && !S.editing) renderDetail();
     }
@@ -763,15 +767,44 @@ function renderList() {
   });
   if (!vis.length && S.list.length) nodes.push(el('div', { class: 'no-match' }, 'No requests match “' + S.filter.trim() + '”'));
   list.replaceChildren(...nodes);
-  $('#count').textContent = S.filter.trim() ? vis.length + ' / ' + S.list.length : S.list.length + (S.list.length === 1 ? ' request' : ' requests');
+  updateCount();
   renderEmpty();
 }
+// addSummary inserts s (newest first) and evicts beyond the store capacity.
+// It returns true when s became the newest entry.
 function addSummary(s, fresh) {
-  if (S.byId.has(s.id)) return;
+  if (S.byId.has(s.id)) return false;
   S.byId.set(s.id, s);
-  if (!S.list.length || s.id > S.list[0].id) S.list.unshift(s);
-  else { S.list.push(s); S.list.sort((a, b) => b.id - a.id); }
+  const L = S.list;
+  let newest = false;
+  if (!L.length || s.id > L[0].id) { L.unshift(s); newest = true; }
+  else if (s.id < L[L.length - 1].id) L.push(s);
+  else {
+    let lo = 0, hi = L.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (L[mid].id > s.id) lo = mid + 1; else hi = mid; }
+    L.splice(lo, 0, s);
+  }
   if (fresh) S.rows.set(s.id, makeRow(s, true));
+  trim();
+  return newest && S.byId.has(s.id);
+}
+// trim drops the oldest entries beyond S.cap; it returns whether anything was evicted.
+function trim() {
+  let evicted = false;
+  while (S.list.length > S.cap) {
+    const old = S.list.pop();
+    S.byId.delete(old.id);
+    const r = S.rows.get(old.id);
+    if (r) { r.remove(); S.rows.delete(old.id); }
+    S.details.delete(old.id);
+    evicted = true;
+    if (old.id === S.sel) { S.detailOk = false; showGone(old.id); }
+  }
+  return evicted;
+}
+function updateCount() {
+  const n = S.list.length;
+  $('#count').textContent = S.filter.trim() ? visible().length + ' / ' + n : n + (n === 1 ? ' request' : ' requests');
 }
 async function loadList() {
   try {
@@ -786,8 +819,15 @@ async function loadList() {
 }
 function onExchange(s) {
   const wasEmpty = S.list.length === 0;
-  addSummary(s, true);
-  renderList();
+  const newest = addSummary(s, true);
+  if (newest && !wasEmpty && !S.filter.trim()) {
+    // Fast path: prepend one row instead of rebuilding the list.
+    const row = S.rows.get(s.id);
+    row.classList.toggle('sel', s.id === S.sel);
+    row.setAttribute('aria-selected', s.id === S.sel);
+    $('#list').prepend(row);
+    updateCount();
+  } else renderList();
   if (!S.sel && wasEmpty && wide.matches) select(s.id);
   else if (s.id === S.sel && !S.detailOk) renderDetail();
 }
@@ -796,7 +836,7 @@ function connect() {
   es = new EventSource('/api/events');
   es.onopen = () => {
     // After a reconnect the inspector may have restarted (IDs reset), so drop cached state.
-    if (S.hadOpen) { S.list = []; S.byId.clear(); S.rows.clear(); S.details.clear(); S.detailOk = false; }
+    if (S.hadOpen) { S.list = []; S.byId.clear(); S.rows.clear(); S.details.clear(); S.detailOk = false; renderList(); }
     S.hadOpen = true; backoff = 1000; setLive(true); loadList();
   };
   es.addEventListener('exchange', e => { try { onExchange(JSON.parse(e.data)); } catch {} });
@@ -847,13 +887,19 @@ window.addEventListener('hashchange', () => {
 });
 
 /* ---------------- detail ---------------- */
+const DETAIL_CACHE = 50;
 async function getDetail(id) {
-  if (S.details.has(id)) return S.details.get(id);
+  if (S.details.has(id)) {
+    const ex = S.details.get(id);
+    S.details.delete(id); S.details.set(id, ex); // most recently used last
+    return ex;
+  }
   const r = await fetch('/api/requests/' + id);
   if (r.status === 404) return null;
   if (!r.ok) throw new Error(await r.text());
   const ex = await r.json();
   S.details.set(id, ex);
+  while (S.details.size > DETAIL_CACHE) S.details.delete(S.details.keys().next().value);
   if (!S.byId.has(id)) {
     addSummary({ id: ex.id, start: ex.start, duration: ex.duration, method: ex.request.method, uri: ex.request.uri,
       status: ex.response.status, replay_of: ex.replay_of, upgraded: ex.upgraded }, false);
@@ -874,13 +920,18 @@ async function renderDetail(animate) {
   let ex;
   try { ex = await getDetail(id); } catch { ex = undefined; }
   if (seq !== detailSeq) return;
-  if (!ex) {
-    pane.replaceChildren(el('div', { class: 'pane-empty' }, el('div', null, icon('info'),
-      el('div', null, ex === null ? 'Request #' + id + ' is not available. It may have been cleared, or not arrived yet.' : 'Could not load request #' + id + '.'))));
-    return;
-  }
+  if (!ex) { paneMessage(ex === null ? 'Request #' + id + ' is not available. It may have been cleared, or not arrived yet.' : 'Could not load request #' + id + '.'); return; }
   S.detailOk = true;
   pane.replaceChildren(...buildDetail(ex, animate));
+}
+function paneMessage(msg) {
+  $('#detail').replaceChildren(el('div', { class: 'pane-empty' }, el('div', null, icon('info'), el('div', null, msg))));
+}
+// showGone is used when the selected entry is evicted from the ring buffer.
+function showGone(id) {
+  ++detailSeq; // cancel any in-flight render
+  S.editing = false;
+  paneMessage('Request #' + id + ' is no longer available. Older requests are dropped once ' + S.cap + ' are held.');
 }
 function fullUrl(ex) {
   const base = (S.status.public_url || (ex.request.host ? 'http://' + ex.request.host : '')).replace(/\/$/, '');
@@ -968,7 +1019,7 @@ function bodyInfo(body, headers) {
   const bytes = b64bytes(body.data);
   const ctype = headerVal(headers, 'content-type').toLowerCase();
   if (!bytes.length) return { kind: 'empty', ctype };
-  const text = decodeText(bytes);
+  const text = decodeText(bytes, body.truncated);
   if (text === null) return { kind: 'binary', ctype, n: bytes.length };
   let kind = 'text', pretty = null;
   const looksJSON = /json/.test(ctype) || (!ctype || ctype.startsWith('text/plain')) && /^\s*[\[{]/.test(text);
@@ -1047,7 +1098,7 @@ function buildEditor(ex) {
   const req = ex.request;
   const hdrText = headerPairs(req.header).map(([k, v]) => k + ': ' + v).join('\n');
   const bytes = b64bytes(req.body.data);
-  const text = bytes.length ? decodeText(bytes) : '';
+  const text = bytes.length ? decodeText(bytes, req.body.truncated) : '';
   const binary = text === null;
   const bodyInit = binary ? '' : text;
   const method = el('input', { class: 'field method', value: req.method, list: 'methods', 'aria-label': 'Method', spellcheck: 'false' });
@@ -1065,7 +1116,7 @@ function buildEditor(ex) {
     const edit = { method: method.value.trim().toUpperCase(), uri: uri.value.trim() };
     if (!edit.uri.startsWith('/') || edit.uri.startsWith('//')) { err.textContent = 'Path must start with a single "/".'; uri.focus(); return; }
     if (hdrs.value !== hdrText) {
-      const h = {};
+      const h = Object.create(null);
       const lines = hdrs.value.split('\n');
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim();
@@ -1126,6 +1177,7 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (S.editing && e.key !== 'Escape' && e.key !== '/') return;
   switch (e.key) {
     case 'ArrowDown': case 'j': e.preventDefault(); move(1); break;
     case 'ArrowUp': case 'k': e.preventDefault(); move(-1); break;

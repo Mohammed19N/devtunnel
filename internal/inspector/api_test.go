@@ -220,7 +220,8 @@ func TestAPIHardeningHeaders(t *testing.T) {
 	in := newTestInspector()
 	rec := do(in, "GET", "/", "localhost:4040", "", "")
 	h := rec.Header()
-	if h.Get("X-Frame-Options") != "DENY" || h.Get("Content-Security-Policy") != "frame-ancestors 'none'" {
+	const csp = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'self'; frame-ancestors 'none'"
+	if h.Get("X-Frame-Options") != "DENY" || h.Get("Content-Security-Policy") != csp {
 		t.Fatalf("index headers = %v", h)
 	}
 	for _, rec := range []*httptest.ResponseRecorder{
@@ -235,7 +236,7 @@ func TestAPIHardeningHeaders(t *testing.T) {
 func TestAPIStatus(t *testing.T) {
 	in := newTestInspector()
 	rec := do(in, "GET", "/api/status", "localhost:4040", "", "")
-	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"public_url":"","target":""}` {
+	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"public_url":"","target":"","capacity":500}` {
 		t.Fatalf("status before = %d %q", rec.Code, rec.Body.String())
 	}
 	in.SetPublicURL("https://abc.passway.dev")
@@ -244,7 +245,7 @@ func TestAPIStatus(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("content-type = %q", ct)
 	}
-	if got := strings.TrimSpace(rec.Body.String()); got != `{"public_url":"https://abc.passway.dev","target":"http://localhost:3000"}` {
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"public_url":"https://abc.passway.dev","target":"http://localhost:3000","capacity":500}` {
 		t.Fatalf("status = %q", got)
 	}
 }

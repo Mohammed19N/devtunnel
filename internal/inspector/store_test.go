@@ -63,3 +63,12 @@ func TestStoreSlowSubscriberDoesNotBlock(t *testing.T) {
 		t.Fatal("Add blocked")
 	}
 }
+
+func TestStoreCapacity(t *testing.T) {
+	if c := NewStore(0).Capacity(); c != DefaultCapacity {
+		t.Fatalf("default capacity = %d", c)
+	}
+	if c := NewStore(7).Capacity(); c != 7 {
+		t.Fatalf("capacity = %d", c)
+	}
+}
