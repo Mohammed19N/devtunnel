@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -76,13 +77,19 @@ func (in *Inspector) Replay(ctx context.Context, id int64, edit *Edit) (int64, e
 	}
 	method, uri := r.Method, r.URI
 	if edit.Method != nil {
-		method = strings.ToUpper(strings.TrimSpace(*edit.Method))
+		method = *edit.Method
+	}
+	if method == "" {
+		return 0, fmt.Errorf("%w: method must not be empty", ErrBadEdit)
 	}
 	if edit.URI != nil {
 		uri = *edit.URI
 	}
-	if !strings.HasPrefix(uri, "/") {
-		return 0, fmt.Errorf("%w: uri must start with \"/\"", ErrBadEdit)
+	if !strings.HasPrefix(uri, "/") || strings.HasPrefix(uri, "//") {
+		return 0, fmt.Errorf("%w: uri must be a path starting with a single \"/\"", ErrBadEdit)
+	}
+	if u, err := url.ParseRequestURI(uri); err != nil || u.Host != "" {
+		return 0, fmt.Errorf("%w: uri must be a path", ErrBadEdit)
 	}
 	body := r.Body.Data
 	if edit.Body != nil {
@@ -90,7 +97,11 @@ func (in *Inspector) Replay(ctx context.Context, id int64, edit *Edit) (int64, e
 	}
 	hdr := r.Header.Clone()
 	if edit.Header != nil {
-		hdr = edit.Header.Clone()
+		hdr = http.Header{}
+		for k, vs := range edit.Header {
+			ck := http.CanonicalHeaderKey(k)
+			hdr[ck] = append(hdr[ck], vs...)
+		}
 	}
 	if hdr == nil {
 		hdr = http.Header{}

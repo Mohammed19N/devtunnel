@@ -31,3 +31,12 @@ func TestCurlEscapesAndFallbacks(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
+
+func TestCurlMultiValueHeader(t *testing.T) {
+	e := &Exchange{Request: Request{Method: "GET", URI: "/", Host: "h",
+		Header: http.Header{"X-A": {"1", "2"}}}}
+	want := `curl -X 'GET' 'http://h/' -H 'X-A: 1' -H 'X-A: 2'`
+	if got := CurlCommand(e, ""); got != want {
+		t.Fatalf("got %s", got)
+	}
+}

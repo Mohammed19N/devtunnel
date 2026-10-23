@@ -80,7 +80,7 @@ func TestReplayBadEdit(t *testing.T) {
 	var s seen
 	in := New(0, s.handler())
 	capturePost(in, []byte(`x`))
-	for _, e := range []*Edit{{URI: ptr("nope")}, {Method: ptr("BAD METHOD")}} {
+	for _, e := range []*Edit{{URI: ptr("nope")}, {URI: ptr("//evil.com/x")}, {URI: ptr("/a b\x7f")}, {Method: ptr("BAD METHOD")}, {Method: ptr("")}} {
 		if _, err := in.Replay(context.Background(), 1, e); !errors.Is(err, ErrBadEdit) {
 			t.Fatalf("edit %+v: err = %v", e, err)
 		}
@@ -106,5 +106,25 @@ func TestReplayNotFound(t *testing.T) {
 	in := New(0, http.NotFoundHandler())
 	if _, err := in.Replay(context.Background(), 9, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestReplayEditHeaderCanonicalized(t *testing.T) {
+	var got http.Header
+	in := New(0, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		got = r.Header.Clone()
+	}))
+	capturePost(in, []byte("abc"))
+	_, err := in.Replay(context.Background(), 1, &Edit{
+		Header: http.Header{"content-length": {"99"}, "x-test": {"a"}}, Body: ptr("12345")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := got["Content-Length"]; len(v) != 1 || v[0] != "5" {
+		t.Fatalf("content-length = %v", v)
+	}
+	if got.Get("X-Test") != "a" {
+		t.Fatalf("headers = %v", got)
 	}
 }

@@ -26,7 +26,10 @@ const maxEditBody = 16 << 20
 func (in *Inspector) UI() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		h := w.Header()
+		h.Set("Content-Type", "text/html; charset=utf-8")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
 		w.Write(indexHTML)
 	})
 	mux.HandleFunc("GET /api/requests", func(w http.ResponseWriter, r *http.Request) {
@@ -154,6 +157,7 @@ func isLoopbackHost(hostport string) bool {
 // guard blocks DNS-rebinding, cross-origin and form-based CSRF requests. It sets no CORS headers.
 func guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if !isLoopbackHost(r.Host) {
 			http.Error(w, "forbidden host", http.StatusForbidden)
 			return

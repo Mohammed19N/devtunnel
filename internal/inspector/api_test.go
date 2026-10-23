@@ -50,6 +50,11 @@ func TestAPIGuard(t *testing.T) {
 		{"origin evil no ctype", "POST", "/api/requests/1/replay", "127.0.0.1:4040", "", []string{"Origin", "http://evil.com"}, 403},
 		{"origin ok", "GET", "/api/requests", "127.0.0.1:4040", "", []string{"Origin", "http://127.0.0.1:4040"}, 200},
 		{"origin https rejected", "GET", "/api/requests", "127.0.0.1:4040", "", []string{"Origin", "https://127.0.0.1:4040"}, 403},
+		{"suffix host", "GET", "/api/requests", "localhost.evil.com", "", nil, 403},
+		{"nip host", "GET", "/api/requests", "127.0.0.1.nip.io", "", nil, 403},
+		{"origin null", "GET", "/api/requests", "127.0.0.1:4040", "", []string{"Origin", "null"}, 403},
+		{"form ctype", "POST", "/api/requests/1/replay", "127.0.0.1:4040", "application/x-www-form-urlencoded", nil, 415},
+		{"json charset", "DELETE", "/api/requests", "127.0.0.1:4040", "application/json; charset=utf-8", nil, 204},
 		{"localhost", "GET", "/api/requests", "localhost:4040", "", nil, 200},
 		{"ipv6", "GET", "/api/requests", "[::1]:4040", "", nil, 200},
 		{"ipv6 no port", "GET", "/api/requests", "[::1]", "", nil, 200},
@@ -207,5 +212,21 @@ func TestAPIClear(t *testing.T) {
 	rec := do(in, "GET", "/api/requests", "localhost:4040", "", "")
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 0 || strings.TrimSpace(rec.Body.String()) != "[]" {
 		t.Fatalf("list = %q", rec.Body.String())
+	}
+}
+
+func TestAPIHardeningHeaders(t *testing.T) {
+	in := newTestInspector()
+	rec := do(in, "GET", "/", "localhost:4040", "", "")
+	h := rec.Header()
+	if h.Get("X-Frame-Options") != "DENY" || h.Get("Content-Security-Policy") != "frame-ancestors 'none'" {
+		t.Fatalf("index headers = %v", h)
+	}
+	for _, rec := range []*httptest.ResponseRecorder{
+		rec, do(in, "GET", "/api/requests", "localhost:4040", "", ""), do(in, "GET", "/api/requests", "evil.com", "", ""),
+	} {
+		if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("missing nosniff: %v", rec.Header())
+		}
 	}
 }
