@@ -1,0 +1,211 @@
+package inspector
+
+import (
+	"bufio"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+func newTestInspector() *Inspector {
+	return New(0, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(200)
+	}))
+}
+
+func do(in *Inspector, method, path, host, ctype, body string, hdr ...string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Host = host
+	if ctype != "" {
+		req.Header.Set("Content-Type", ctype)
+	}
+	for i := 0; i+1 < len(hdr); i += 2 {
+		req.Header.Set(hdr[i], hdr[i+1])
+	}
+	rec := httptest.NewRecorder()
+	in.UI().ServeHTTP(rec, req)
+	return rec
+}
+
+func TestAPIGuard(t *testing.T) {
+	in := newTestInspector()
+	cases := []struct {
+		name                      string
+		method, path, host, ctype string
+		hdr                       []string
+		want                      int
+	}{
+		{"bad host", "GET", "/api/requests", "evil.com", "", nil, 403},
+		{"bad host with port", "GET", "/api/requests", "evil.com:4040", "", nil, 403},
+		{"replay no ctype", "POST", "/api/requests/1/replay", "127.0.0.1:4040", "", nil, 415},
+		{"replay wrong ctype", "POST", "/api/requests/1/replay", "127.0.0.1:4040", "text/plain", nil, 415},
+		{"delete no ctype", "DELETE", "/api/requests", "127.0.0.1:4040", "", nil, 415},
+		{"delete json", "DELETE", "/api/requests", "127.0.0.1:4040", "application/json", nil, 204},
+		{"origin evil", "POST", "/api/requests/1/replay", "127.0.0.1:4040", "application/json", []string{"Origin", "http://evil.com"}, 403},
+		{"origin evil no ctype", "POST", "/api/requests/1/replay", "127.0.0.1:4040", "", []string{"Origin", "http://evil.com"}, 403},
+		{"origin ok", "GET", "/api/requests", "127.0.0.1:4040", "", []string{"Origin", "http://127.0.0.1:4040"}, 200},
+		{"origin https rejected", "GET", "/api/requests", "127.0.0.1:4040", "", []string{"Origin", "https://127.0.0.1:4040"}, 403},
+		{"localhost", "GET", "/api/requests", "localhost:4040", "", nil, 200},
+		{"ipv6", "GET", "/api/requests", "[::1]:4040", "", nil, 200},
+		{"ipv6 no port", "GET", "/api/requests", "[::1]", "", nil, 200},
+		{"loopback", "GET", "/api/requests", "127.0.0.1:4040", "", nil, 200},
+	}
+	for _, c := range cases {
+		rec := do(in, c.method, c.path, c.host, c.ctype, "", c.hdr...)
+		if rec.Code != c.want {
+			t.Errorf("%s: got %d want %d", c.name, rec.Code, c.want)
+		}
+		if rec.Header().Get("Access-Control-Allow-Origin") != "" {
+			t.Errorf("%s: CORS header set", c.name)
+		}
+	}
+}
+
+func TestAPIListGetReplay(t *testing.T) {
+	in := newTestInspector()
+	capturePost(in, []byte(`{"a":1}`))
+	const h = "127.0.0.1:4040"
+
+	var list []Summary
+	rec := do(in, "GET", "/api/requests", h, "", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 1 {
+		t.Fatalf("list = %v err=%v", rec.Body.String(), err)
+	}
+	var e Exchange
+	rec = do(in, "GET", "/api/requests/1", h, "", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || string(e.Request.Body.Data) != `{"a":1}` {
+		t.Fatalf("get = %v err=%v", rec.Body.String(), err)
+	}
+	if rec = do(in, "GET", "/api/requests/77", h, "", ""); rec.Code != 404 {
+		t.Fatalf("missing = %d", rec.Code)
+	}
+	if rec = do(in, "GET", "/api/requests/abc", h, "", ""); rec.Code != 404 {
+		t.Fatalf("bad id = %d", rec.Code)
+	}
+	rec = do(in, "GET", "/api/requests/1/curl", h, "", "")
+	if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/plain") || !strings.HasPrefix(rec.Body.String(), "curl -X 'POST' 'http://app.local/hook?a=1'") {
+		t.Fatalf("curl = %d %q", rec.Code, rec.Body.String())
+	}
+	rec = do(in, "POST", "/api/requests/1/replay", h, "application/json", "")
+	if rec.Code != 200 || strings.TrimSpace(rec.Body.String()) != `{"id":2}` {
+		t.Fatalf("replay = %d %q", rec.Code, rec.Body.String())
+	}
+	rec = do(in, "POST", "/api/requests/1/replay", h, "application/json", `{"body":"zz","uri":"/x"}`)
+	if rec.Code != 200 {
+		t.Fatalf("edit replay = %d %q", rec.Code, rec.Body.String())
+	}
+	if rec = do(in, "POST", "/api/requests/1/replay", h, "application/json", `{"uri":"x"}`); rec.Code != 400 {
+		t.Fatalf("bad edit = %d", rec.Code)
+	}
+	if rec = do(in, "POST", "/api/requests/1/replay", h, "application/json", `{not json`); rec.Code != 400 {
+		t.Fatalf("bad json = %d", rec.Code)
+	}
+	if rec = do(in, "POST", "/api/requests/99/replay", h, "application/json", ""); rec.Code != 404 {
+		t.Fatalf("replay missing = %d", rec.Code)
+	}
+
+	big := newTestInspector()
+	capturePost(big, make([]byte, 2<<20))
+	if rec = do(big, "POST", "/api/requests/1/replay", h, "application/json", ""); rec.Code != 409 {
+		t.Fatalf("truncated = %d", rec.Code)
+	}
+}
+
+func TestAPIIndex(t *testing.T) {
+	in := newTestInspector()
+	rec := do(in, "GET", "/", "localhost:4040", "", "")
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "Passway Inspector") {
+		t.Fatalf("index = %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAPIEvents(t *testing.T) {
+	in := newTestInspector()
+	srv := httptest.NewServer(in.UI())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.Header.Get("Content-Type") != "text/event-stream" || resp.Header.Get("Cache-Control") != "no-cache" {
+		t.Fatalf("headers = %v", resp.Header)
+	}
+	capturePost(in, []byte("x"))
+	lines := make(chan string, 8)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+		close(lines)
+	}()
+	deadline := time.After(2 * time.Second)
+	var gotEvent bool
+	for !gotEvent {
+		select {
+		case l := <-lines:
+			if l == "event: exchange" {
+				gotEvent = true
+			}
+		case <-deadline:
+			t.Fatal("no event")
+		}
+	}
+	select {
+	case l := <-lines:
+		var s Summary
+		if !strings.HasPrefix(l, "data: ") || json.Unmarshal([]byte(l[6:]), &s) != nil || s.ID != 1 {
+			t.Fatalf("data line = %q", l)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no data")
+	}
+}
+
+func TestAPIEventsPing(t *testing.T) {
+	old := pingInterval
+	pingInterval = 20 * time.Millisecond
+	defer func() { pingInterval = old }()
+	in := newTestInspector()
+	srv := httptest.NewServer(in.UI())
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			if strings.HasPrefix(sc.Text(), ": ping") {
+				got <- sc.Text()
+				return
+			}
+		}
+	}()
+	select {
+	case <-got:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no ping")
+	}
+}
+
+func TestAPIClear(t *testing.T) {
+	in := newTestInspector()
+	capturePost(in, []byte("x"))
+	if rec := do(in, "DELETE", "/api/requests", "localhost:4040", "application/json", ""); rec.Code != 204 {
+		t.Fatalf("delete = %d", rec.Code)
+	}
+	var list []Summary
+	rec := do(in, "GET", "/api/requests", "localhost:4040", "", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 0 || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("list = %q", rec.Body.String())
+	}
+}
