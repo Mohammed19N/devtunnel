@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -95,7 +96,8 @@ func setupEnv(t *testing.T, o opts) (*env, *server.Server) {
 					out = append(out, dashboard.TunnelInfo{URL: tn.URL, ClientVersion: tn.ClientVersion, ConnectedAt: tn.ConnectedAt, Requests: tn.Requests})
 				}
 				return out
-			}})
+			},
+			Disconnect: func(id string, token int64) { srv.CloseTokenTunnels(id, token) }})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -744,10 +746,16 @@ func (b *browserSession) get(path string) (int, string) {
 // post fetches the page at path for its CSRF token, then posts the form to it.
 func (b *browserSession) post(path string, form url.Values) (int, string) {
 	b.t.Helper()
-	_, page := b.get(path)
+	return b.postFrom(path, path, form)
+}
+
+// postFrom posts form to path with the CSRF token from the page at from.
+func (b *browserSession) postFrom(from, path string, form url.Values) (int, string) {
+	b.t.Helper()
+	_, page := b.get(from)
 	m := csrfRe.FindStringSubmatch(page)
 	if m == nil {
-		b.t.Fatalf("no csrf token on %s: %s", path, page)
+		b.t.Fatalf("no csrf token on %s: %s", from, page)
 	}
 	form.Set("csrf", m[1])
 	req, _ := http.NewRequest("POST", b.e.base+path, strings.NewReader(form.Encode()))
@@ -774,30 +782,42 @@ func (b *browserSession) newToken(name string) string {
 // startClient runs a tunnel client for token and returns its Ready and result.
 func (e *env) startClient(t *testing.T, token, name string, handler http.Handler) (protocol.Ready, <-chan error) {
 	t.Helper()
+	r, res, _ := e.startStoppableClient(t, token, name, handler)
+	return r, res
+}
+
+// startStoppableClient is startClient that also returns a function which
+// stops the client (like Ctrl-C) and waits for it to exit.
+func (e *env) startStoppableClient(t *testing.T, token, name string, handler http.Handler) (protocol.Ready, <-chan error, func()) {
+	t.Helper()
 	ready := make(chan protocol.Ready, 4)
 	res := make(chan error, 1)
+	done := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	target, _ := url.Parse(e.local.URL)
 	go func() {
+		defer close(done)
 		res <- client.Run(ctx, client.Config{Server: e.base, Token: token, Name: name, Target: target, Handler: handler,
 			Logger: discard, OnReady: func(r protocol.Ready) { ready <- r }})
 	}()
-	t.Cleanup(func() {
+	stop := func() {
 		cancel()
 		select {
-		case <-res:
+		case <-done:
 		case <-time.After(10 * time.Second):
+			t.Error("client did not exit")
 		}
-	})
+	}
+	t.Cleanup(stop)
 	select {
 	case r := <-ready:
-		return r, res
+		return r, res, stop
 	case err := <-res:
 		t.Fatalf("client exited before ready: %v", err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("tunnel never became ready")
 	}
-	return protocol.Ready{}, nil
+	return protocol.Ready{}, nil, nil
 }
 
 func TestCloudSignupLoginClaim(t *testing.T) {
@@ -848,6 +868,19 @@ func TestCloudSignupLoginClaim(t *testing.T) {
 	// first cell is its URL.
 	if n := strings.Count(page, "<td>http://"); n != 2 {
 		t.Fatalf("dashboard shows %d tunnels, want 2:\n%s", n, page)
+	}
+}
+
+// Restarting the CLI (a new session ID) gets the account's default name back
+// at once, not name_taken for the post-disconnect hold.
+func TestCloudRestartKeepsDefaultName(t *testing.T) {
+	e, _ := setupEnv(t, opts{cloud: true})
+	tok := e.devLogin(t, "alice").newToken("laptop")
+	r1, _, stop := e.startStoppableClient(t, tok, "", nil)
+	stop()
+	r2, _ := e.startClient(t, tok, "", nil)
+	if r2.Name != r1.Name {
+		t.Fatalf("after restart got %q, want %q", r2.Name, r1.Name)
 	}
 }
 
@@ -920,6 +953,60 @@ func TestCloudBanDisconnects(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("banned client was not disconnected")
 	}
+}
+
+// waitUnauthorized waits for a client whose token was revoked to end with unauthorized.
+func waitUnauthorized(t *testing.T, res <-chan error) {
+	t.Helper()
+	select {
+	case err := <-res:
+		var pe *protocol.Error
+		if !errors.As(err, &pe) || pe.Code != protocol.CodeUnauthorized {
+			t.Fatalf("client ended with %v, want unauthorized", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("client of a revoked token was not disconnected")
+	}
+}
+
+func TestCloudDashboardRevokeDisconnects(t *testing.T) {
+	e, _ := setupEnv(t, opts{cloud: true})
+	alice := e.devLogin(t, "alice")
+	tok := alice.newToken("laptop")
+	_, res := e.startClient(t, tok, "", nil)
+	u, err := e.store.UserByLogin(context.Background(), "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toks, err := e.store.ListTokens(context.Background(), u.ID)
+	if err != nil || len(toks) != 1 {
+		t.Fatalf("tokens: %v %v", toks, err)
+	}
+	if code, body := alice.postFrom("/dashboard/tokens", "/dashboard/tokens/revoke", url.Values{"id": {strconv.FormatInt(toks[0].ID, 10)}}); code != http.StatusSeeOther {
+		t.Fatalf("revoke: %d %s", code, body)
+	}
+	waitUnauthorized(t, res)
+}
+
+// A token revoked outside the server process is caught by the ban poller.
+func TestCloudStoreRevokeDisconnects(t *testing.T) {
+	e, srv := setupEnv(t, opts{cloud: true})
+	tok := e.devLogin(t, "alice").newToken("laptop")
+	_, res := e.startClient(t, tok, "", nil)
+	ctx := context.Background()
+	u, err := e.store.UserByLogin(ctx, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	toks, err := e.store.ListTokens(ctx, u.ID)
+	if err != nil || len(toks) != 1 {
+		t.Fatalf("tokens: %v %v", toks, err)
+	}
+	if err := e.store.RevokeToken(ctx, u.ID, toks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	srv.PollBansNow(ctx)
+	waitUnauthorized(t, res)
 }
 
 func TestSelfHostedStillRandomNames(t *testing.T) {

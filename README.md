@@ -159,9 +159,9 @@ Owner to-dos before a public launch:
 |---|---|---|
 | `--db` | (required) | SQLite database path. |
 | `--github-client-id`, `--github-client-secret` | (empty) | GitHub OAuth app. The secret may come from `$PASSWAY_GITHUB_CLIENT_SECRET`. |
-| `--base-url` | `<scheme>://<domain>[:port]` | Public dashboard URL. |
+| `--base-url` | `<scheme>://<domain>[:port]` | Public dashboard URL. Its host must be `--domain`. |
 | `--min-github-age` | `168h` | Minimum GitHub account age to sign up (`0` disables). |
-| `--free-signup-cap` | `1000` | Free accounts allowed; later signups are waitlisted. |
+| `--free-signup-cap` | `1000` | Free accounts allowed; later signups are waitlisted. A waitlisted user is admitted at their next sign-in once there is room, or by an operator with `passway-server admin --db PATH admit <login>`. |
 | `--free-bandwidth-cap` | `500 GiB` | Monthly bandwidth across all Free accounts, in bytes. |
 | `--dev-login` | `false` | Passwordless dev sign-in (localhost only). |
 

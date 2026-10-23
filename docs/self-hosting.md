@@ -46,9 +46,8 @@ passway-server --self-hosted --domain tunnels.example.com --db /var/lib/passway/
 passway-server admin --db /var/lib/passway/p.db token create ci
 ```
 
-The database must already exist: start the server once with `--db`, which
-creates it, before running `admin`. The token is printed once. Only its hash
-is stored.
+`token create` creates the database if it doesn't exist yet, so this works
+on a fresh install. The token is printed once. Only its hash is stored.
 
 ## DNS and TLS
 
@@ -107,9 +106,15 @@ passway-server admin --db PATH <command>
   ban user <login> [--reason R]    ban host <label> [--reason R]
   unban user <login>               unban host <label>
   set-plan <login> free|pro        whois <label>
+  admit <login>
   token create <name>              token list        token revoke <id>
 ```
 
-`ban`, `unban`, `set-plan` and `whois` apply to cloud accounts. A ban closes
-the live tunnels within about 15 seconds. `token` manages the admin tokens
-used by self-hosted relays.
+`ban`, `unban`, `set-plan`, `whois` and `admit` apply to cloud accounts. A
+ban closes the live tunnels within about 15 seconds. `admit` takes a user off
+the waitlist; a waitlisted user is also admitted automatically at their next
+sign-in once the number of Free accounts is below `--free-signup-cap`.
+`whois` prints `<label> -> @<login> (plan, user id)`. `token` manages the
+admin tokens used by self-hosted relays; they are refused in cloud mode. Every
+command except `token create` needs an existing database. Revoking a token
+closes the tunnels that use it (within about 15 seconds when revoked here).
