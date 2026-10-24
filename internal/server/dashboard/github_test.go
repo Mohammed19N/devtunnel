@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -401,9 +402,28 @@ func TestDevLoginRefusedOffLocalhost(t *testing.T) {
 	}
 }
 
+// devPost posts the dev-login form with the given Origin ("" sends none).
+func (e *testEnv) devPost(login, origin string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	r := httptest.NewRequest("POST", "/auth/dev", strings.NewReader(url.Values{"login": {login}}.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if origin != "" {
+		r.Header.Set("Origin", origin)
+	}
+	r.Host = "localhost:8080"
+	for _, c := range cookies {
+		r.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+	}
+	w := httptest.NewRecorder()
+	e.d.ServeHTTP(w, r)
+	return w
+}
+
 func TestDevLogin(t *testing.T) {
 	e := newTestEnv(t, func(c *Config) { c.DevLogin = true })
-	w := e.do("GET", "/auth/dev?login=dev-user", nil)
+	if w := e.do("GET", "/auth/dev", nil); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `name="login"`) {
+		t.Errorf("GET form = %d %q", w.Code, w.Body.String())
+	}
+	w := e.devPost("dev-user", testBaseURL)
 	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/dashboard" {
 		t.Fatalf("dev login = %d %q", w.Code, w.Header().Get("Location"))
 	}
@@ -417,12 +437,76 @@ func TestDevLogin(t *testing.T) {
 	if dw := e.do("GET", "/dashboard", nil, cookieNamed(w, "passway_session")); dw.Code != http.StatusOK {
 		t.Errorf("/dashboard = %d", dw.Code)
 	}
-	if w := e.do("GET", "/auth/dev?login=", nil); w.Code != http.StatusBadRequest {
+	if w := e.devPost("", testBaseURL); w.Code != http.StatusBadRequest {
 		t.Errorf("empty login = %d, want 400", w.Code)
 	}
 
 	off := newTestEnv(t, nil)
-	if w := off.do("GET", "/auth/dev?login=x", nil); w.Code != http.StatusNotFound {
+	if w := off.do("GET", "/auth/dev", nil); w.Code != http.StatusNotFound {
 		t.Errorf("dev login without DevLogin = %d, want 404", w.Code)
+	}
+}
+
+func TestDevLoginGetDoesNotSignIn(t *testing.T) {
+	e := newTestEnv(t, func(c *Config) { c.DevLogin = true })
+	w := e.do("GET", "/auth/dev?login=x", nil)
+	if c := cookieNamed(w, "passway_session"); c != nil {
+		t.Errorf("GET set a session cookie: %+v", c)
+	}
+	if _, err := e.st.UserByLogin(context.Background(), "x"); err == nil {
+		t.Error("GET created a user")
+	}
+}
+
+func TestDevLoginPostCrossOriginRefused(t *testing.T) {
+	e := newTestEnv(t, func(c *Config) { c.DevLogin = true })
+	for name, w := range map[string]*httptest.ResponseRecorder{
+		"evil origin": e.devPost("x", "http://evil.localhost"),
+		"no origin":   e.devPost("x", ""),
+	} {
+		if w.Code != http.StatusForbidden || cookieNamed(w, "passway_session") != nil {
+			t.Errorf("%s: code = %d, cookie = %v; want 403 and none", name, w.Code, cookieNamed(w, "passway_session"))
+		}
+	}
+	// A matching Referer alone is enough.
+	r := httptest.NewRequest("POST", "/auth/dev", strings.NewReader("login=x"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Referer", testBaseURL+"/auth/dev")
+	w := httptest.NewRecorder()
+	e.d.ServeHTTP(w, r)
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("referer-only = %d, want 303", w.Code)
+	}
+}
+
+func TestSignInReplacesOldSession(t *testing.T) {
+	e := newTestEnv(t, func(c *Config) { c.DevLogin = true })
+	first := cookieNamed(e.devPost("alice", testBaseURL), "passway_session")
+	if first == nil {
+		t.Fatal("no first session")
+	}
+	second := cookieNamed(e.devPost("alice", testBaseURL, first), "passway_session")
+	if second == nil || second.Value == first.Value {
+		t.Fatalf("second session = %+v", second)
+	}
+	if _, err := e.st.SessionByID(context.Background(), first.Value); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("first session err = %v, want ErrNotFound", err)
+	}
+	if _, err := e.st.SessionByID(context.Background(), second.Value); err != nil {
+		t.Errorf("second session: %v", err)
+	}
+}
+
+func TestGitHubSignInReplacesOldSession(t *testing.T) {
+	e := newTestEnv(t, nil)
+	e.gh.addUser(42, "alice", 400*24*time.Hour)
+	first := cookieNamed(e.signIn(t, "alice"), "passway_session")
+	stateCookie, state := e.login(t)
+	w := e.do("GET", "/auth/github/callback?code=c-alice&state="+url.QueryEscape(state), nil, stateCookie, first)
+	if _, err := e.st.SessionByID(context.Background(), first.Value); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("first session err = %v, want ErrNotFound", err)
+	}
+	if cookieNamed(w, "passway_session") == nil {
+		t.Error("no new session")
 	}
 }

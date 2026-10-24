@@ -125,6 +125,12 @@ func (d *Dashboard) sameOrigin(r *http.Request) bool {
 	return true
 }
 
+// hasSameOrigin is sameOrigin, except a request carrying neither Origin nor
+// Referer fails.
+func (d *Dashboard) hasSameOrigin(r *http.Request) bool {
+	return (r.Header.Get("Origin") != "" || r.Header.Get("Referer") != "") && d.sameOrigin(r)
+}
+
 // page wraps a GET handler that needs a session; signed-out requests go to /.
 func (d *Dashboard) page(h func(http.ResponseWriter, *http.Request, *session)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

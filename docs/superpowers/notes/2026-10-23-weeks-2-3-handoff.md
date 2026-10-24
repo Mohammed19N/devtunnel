@@ -15,8 +15,8 @@ All three are pushed. Nothing was merged and no PRs were opened, since those are
 ### Try the week-3 demo locally (no GitHub app needed)
 
 ```sh
-go run ./cmd/passway-server --domain localhost --db ./passway.db --dev-login
-# open http://localhost:8080/auth/dev?login=you → dashboard → CLI tokens → create
+go run ./cmd/passway-server --mode cloud --domain localhost --db ./passway.db --dev-login
+# open http://localhost:8080/auth/dev, type "you" in the form → dashboard → CLI tokens → create
 go run ./cmd/passway login <token>
 go run ./cmd/passway http 3000          # your default subdomain, Plan line shows Free
 go run ./cmd/passway-server admin --db ./passway.db set-plan you pro

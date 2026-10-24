@@ -11,6 +11,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -51,6 +53,18 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: migrate: %w", err)
 	}
 	return s, nil
+}
+
+// OpenExisting is Open for a database that must already exist; it never
+// creates the file.
+func OpenExisting(path string) (*Store, error) {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("no database at %s", path)
+		}
+		return nil, err
+	}
+	return Open(path)
 }
 
 func (s *Store) Close() error { return s.db.Close() }

@@ -6,8 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	io_fs "io/fs"
-	"os"
 	"strconv"
 	"strings"
 
@@ -41,18 +39,13 @@ func runAdmin(ctx context.Context, args []string, out io.Writer) error {
 	if len(rest) == 0 {
 		return usageError{errors.New(adminUsage)}
 	}
-	// Only "token create" may create the database, so a fresh self-hosted
-	// install can make its first token before the server ever ran.
+	// The database is opened by a.ready, after a command has checked its
+	// arguments, so a usage error never touches (or creates) the file.
+	// Only "token create" may create it, so a fresh self-hosted install can
+	// make its first token before the server ever ran.
 	creating := len(rest) >= 2 && rest[0] == "token" && rest[1] == "create"
-	if _, err := os.Stat(*db); errors.Is(err, io_fs.ErrNotExist) && !creating {
-		return fmt.Errorf("database %s does not exist", *db)
-	}
-	st, err := store.Open(*db)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", *db, err)
-	}
-	defer st.Close()
-	a := admin{ctx: ctx, st: st, out: out}
+	a := &admin{ctx: ctx, out: out, path: *db, create: creating}
+	defer a.close()
 	cmd, rest := rest[0], rest[1:]
 	switch cmd {
 	case "ban":
@@ -78,9 +71,34 @@ func runAdmin(ctx context.Context, args []string, out io.Writer) error {
 }
 
 type admin struct {
-	ctx context.Context
-	st  *store.Store
-	out io.Writer
+	ctx    context.Context
+	st     *store.Store // nil until ready
+	out    io.Writer
+	path   string
+	create bool // ready may create the database
+}
+
+// ready opens the database. Commands call it once their arguments are valid.
+func (a *admin) ready() error {
+	if a.st != nil {
+		return nil
+	}
+	open := store.OpenExisting
+	if a.create {
+		open = store.Open
+	}
+	st, err := open(a.path)
+	if err != nil {
+		return err
+	}
+	a.st = st
+	return nil
+}
+
+func (a *admin) close() {
+	if a.st != nil {
+		a.st.Close()
+	}
 }
 
 // target splits "<kind> <value> [--reason R]".
@@ -97,7 +115,10 @@ func target(name string, args []string) (kind, value, reason string, err error) 
 	return args[0], args[1], *r, nil
 }
 
-func (a admin) user(login string) (store.User, error) {
+func (a *admin) user(login string) (store.User, error) {
+	if err := a.ready(); err != nil {
+		return store.User{}, err
+	}
 	u, err := a.st.UserByLogin(a.ctx, login)
 	if errors.Is(err, store.ErrNotFound) {
 		return store.User{}, fmt.Errorf("no user %q", login)
@@ -105,9 +126,12 @@ func (a admin) user(login string) (store.User, error) {
 	return u, err
 }
 
-func (a admin) ban(args []string) error {
+func (a *admin) ban(args []string) error {
 	kind, value, reason, err := target("ban", args)
 	if err != nil {
+		return err
+	}
+	if err := a.ready(); err != nil {
 		return err
 	}
 	if kind == "host" {
@@ -128,9 +152,12 @@ func (a admin) ban(args []string) error {
 	return nil
 }
 
-func (a admin) unban(args []string) error {
+func (a *admin) unban(args []string) error {
 	kind, value, _, err := target("unban", args)
 	if err != nil {
+		return err
+	}
+	if err := a.ready(); err != nil {
 		return err
 	}
 	if kind == "host" {
@@ -151,7 +178,7 @@ func (a admin) unban(args []string) error {
 	return nil
 }
 
-func (a admin) setPlan(args []string) error {
+func (a *admin) setPlan(args []string) error {
 	if len(args) != 2 || (args[1] != "free" && args[1] != "pro") {
 		return usageError{errors.New("usage: admin set-plan <login> free|pro")}
 	}
@@ -167,7 +194,7 @@ func (a admin) setPlan(args []string) error {
 }
 
 // admit takes a user off the waitlist.
-func (a admin) admit(login string) error {
+func (a *admin) admit(login string) error {
 	u, err := a.user(login)
 	if err != nil {
 		return err
@@ -179,7 +206,10 @@ func (a admin) admit(login string) error {
 	return nil
 }
 
-func (a admin) whois(label string) error {
+func (a *admin) whois(label string) error {
+	if err := a.ready(); err != nil {
+		return err
+	}
 	id, err := a.st.SubdomainOwner(a.ctx, label)
 	if errors.Is(err, store.ErrNotFound) {
 		fmt.Fprintf(a.out, "%s -> unclaimed\n", label)
@@ -196,7 +226,7 @@ func (a admin) whois(label string) error {
 	return nil
 }
 
-func (a admin) token(args []string) error {
+func (a *admin) token(args []string) error {
 	if len(args) == 0 {
 		return usageError{errors.New("usage: admin token create <name> | list | revoke <id>")}
 	}
@@ -205,12 +235,18 @@ func (a admin) token(args []string) error {
 		if len(args) != 2 {
 			return usageError{errors.New("usage: admin token create <name>")}
 		}
+		if err := a.ready(); err != nil {
+			return err
+		}
 		plain, t, err := a.st.CreateToken(a.ctx, 0, args[1])
 		if err != nil {
 			return err
 		}
 		fmt.Fprintf(a.out, "token %d %q (shown once): %s\n", t.ID, t.Name, plain)
 	case "list":
+		if err := a.ready(); err != nil {
+			return err
+		}
 		ts, err := a.st.ListTokens(a.ctx, 0)
 		if err != nil {
 			return err
@@ -226,6 +262,9 @@ func (a admin) token(args []string) error {
 		id, err := strconv.ParseInt(argAt(args, 1), 10, 64)
 		if len(args) != 2 || err != nil {
 			return usageError{errors.New("usage: admin token revoke <id>")}
+		}
+		if err := a.ready(); err != nil {
+			return err
 		}
 		if err := a.st.RevokeToken(a.ctx, 0, id); err != nil {
 			if errors.Is(err, store.ErrNotFound) {

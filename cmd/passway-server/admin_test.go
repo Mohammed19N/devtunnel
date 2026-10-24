@@ -153,7 +153,7 @@ func TestAdminMissingDB(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "nope.db")
 	for _, args := range [][]string{{"whois", "x"}, {"token", "list"}, {"ban", "user", "x"}, {"admit", "x"}, {"token", "revoke", "1"}} {
 		_, err := adm(t, db, args...)
-		if err == nil || err.Error() != "database "+db+" does not exist" || exitCode(err) != 1 {
+		if err == nil || err.Error() != "no database at "+db || exitCode(err) != 1 {
 			t.Errorf("%v: err = %v, want missing-database error, exit 1", args, err)
 		}
 	}
@@ -199,5 +199,39 @@ func TestAdminTokenCreateCreatesDB(t *testing.T) {
 	defer st.Close()
 	if _, err := (store.AdminTokens{S: st}).Authenticate(context.Background(), plain); err != nil {
 		t.Fatalf("created token %q does not authenticate: %v", plain, err)
+	}
+}
+
+func TestAdminUsageErrorCreatesNoFile(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "typo.db")
+	for _, args := range [][]string{{"token", "create"}, {"token", "create", "a", "b"}, {"token"}, {"bogus"}, {"ban", "user"}} {
+		_, err := adm(t, db, args...)
+		if exitCode(err) != 2 {
+			t.Errorf("%v: exit = %d (%v), want 2", args, exitCode(err), err)
+		}
+		if _, err := os.Stat(db); err == nil {
+			t.Fatalf("%v created %s", args, db)
+		}
+	}
+}
+
+func TestAdminMissingDBError(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "none.db")
+	_, err := adm(t, db, "whois", "x")
+	if exitCode(err) != 1 || err == nil || !strings.Contains(err.Error(), "no database at") {
+		t.Fatalf("err = %v (exit %d)", err, exitCode(err))
+	}
+	if _, err := os.Stat(db); err == nil {
+		t.Error("whois created the database")
+	}
+}
+
+func TestAdminTokenCreateMakesDB(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "fresh.db")
+	if _, err := adm(t, db, "token", "create", "laptop"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(db); err != nil {
+		t.Errorf("token create did not make the database: %v", err)
 	}
 }

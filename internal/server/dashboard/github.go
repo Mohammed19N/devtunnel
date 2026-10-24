@@ -158,18 +158,13 @@ func (d *Dashboard) signIn(w http.ResponseWriter, r *http.Request, p ghProfile, 
 		d.fail(w, http.StatusForbidden, ageMessage(min))
 		return
 	}
-	n, err := d.cfg.Store.CountUsers(ctx, server.PlanFree.Name)
-	if err != nil {
-		d.internalError(w, "count users", err)
-		return
-	}
-	// Waitlisted only applies to a new row; an existing user keeps their state.
-	u, created, err := d.cfg.Store.UpsertGitHubUser(ctx, store.User{
+	// The cap check and the insert share one transaction; an existing user
+	// keeps their state.
+	u, created, err := d.cfg.Store.SignupGitHubUser(ctx, store.User{
 		GitHubID: p.ID, Login: p.Login, Name: p.Name, AvatarURL: p.AvatarURL,
-		Waitlisted: n >= d.cfg.FreeSignupCap,
-	})
+	}, d.cfg.FreeSignupCap)
 	if err != nil {
-		d.internalError(w, "upsert user", err)
+		d.internalError(w, "sign up user", err)
 		return
 	}
 	// Checked on the upserted row, so a ban keyed on the user id still holds
@@ -188,7 +183,7 @@ func (d *Dashboard) signIn(w http.ResponseWriter, r *http.Request, p ghProfile, 
 			d.internalError(w, "audit", err)
 			return
 		}
-	} else if u.Waitlisted && n < d.cfg.FreeSignupCap {
+	} else if u.Waitlisted && d.roomForFree(ctx) {
 		// There is room again (an admin raised the cap, or Free users left).
 		if err := d.cfg.Store.SetWaitlisted(ctx, u.ID, false); err != nil {
 			d.internalError(w, "admit from waitlist", err)
@@ -208,6 +203,14 @@ func (d *Dashboard) signIn(w http.ResponseWriter, r *http.Request, p ghProfile, 
 			return
 		}
 	}
+	if old, ok := readCookie(r, d.sessionCookie); ok {
+		// Replace, don't stack: the previous session dies on sign-in. An
+		// unknown id is a harmless no-op.
+		if err := d.cfg.Store.DeleteSession(ctx, old); err != nil {
+			d.internalError(w, "delete old session", err)
+			return
+		}
+	}
 	if err := d.startSession(ctx, w, u.ID); err != nil {
 		d.internalError(w, "create session", err)
 		return
@@ -217,6 +220,12 @@ func (d *Dashboard) signIn(w http.ResponseWriter, r *http.Request, p ghProfile, 
 		dest = "/waitlist"
 	}
 	http.Redirect(w, r, dest, http.StatusSeeOther)
+}
+
+// roomForFree reports whether admitted Free users are below the signup cap.
+func (d *Dashboard) roomForFree(ctx context.Context) bool {
+	n, err := d.cfg.Store.CountUsers(ctx, server.PlanFree.Name)
+	return err == nil && n < d.cfg.FreeSignupCap
 }
 
 // ageMessage is the copy for an account younger than min.
@@ -247,11 +256,22 @@ func (d *Dashboard) ensureDefaultSubdomain(ctx context.Context, userID int64) er
 
 var devLoginRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
 
+// handleDevLoginForm renders the dev-login form (DevLogin only).
+func (d *Dashboard) handleDevLoginForm(w http.ResponseWriter, r *http.Request) {
+	d.render(w, http.StatusOK, "devlogin", view{Title: "Dev sign-in"})
+}
+
 // handleDevLogin signs in as a fake, year-old GitHub account (DevLogin only).
+// POST only, and the request must name BaseURL as its Origin or Referer, so
+// another page cannot sign a visitor in.
 func (d *Dashboard) handleDevLogin(w http.ResponseWriter, r *http.Request) {
-	login := r.URL.Query().Get("login")
+	if !d.hasSameOrigin(r) {
+		d.fail(w, http.StatusForbidden, "This form expired. Go back, reload the page and try again.")
+		return
+	}
+	login := r.PostFormValue("login")
 	if !devLoginRE.MatchString(login) {
-		d.fail(w, http.StatusBadRequest, "Pass a GitHub-style login: /auth/dev?login=alice")
+		d.fail(w, http.StatusBadRequest, "Enter a GitHub-style login, such as alice.")
 		return
 	}
 	d.signIn(w, r, ghProfile{ID: devGitHubID(login), Login: login, Name: login,

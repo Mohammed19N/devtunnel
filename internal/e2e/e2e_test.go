@@ -717,7 +717,13 @@ func (e *env) devLogin(t *testing.T, login string) *browserSession {
 		Jar: jar, Timeout: 10 * time.Second, Transport: e.pin(http.DefaultTransport, false),
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}}
-	resp, err := b.http.Get(e.base + "/auth/dev?login=" + login)
+	req, err := http.NewRequest(http.MethodPost, e.base+"/auth/dev", strings.NewReader(url.Values{"login": {login}}.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", e.base)
+	resp, err := b.http.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

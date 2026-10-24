@@ -1,0 +1,9 @@
+{{define "devlogin"}}{{template "head" .}}
+<h1>Dev sign-in</h1>
+<p>Sign in as a fake GitHub account. This only exists on localhost.</p>
+<form method="post" action="/auth/dev">
+<label for="login">Login</label>
+<input id="login" name="login" required maxlength="39" pattern="[A-Za-z0-9][A-Za-z0-9\-]*" autofocus>
+<button class="btn" type="submit">Sign in</button>
+</form>
+{{template "foot" .}}{{end}}

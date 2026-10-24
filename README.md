@@ -39,7 +39,7 @@ To try the cloud flow locally (accounts, dashboard, plans) instead:
 go run ./cmd/passway-server --mode cloud --domain localhost --db ./passway.db --dev-login
 ```
 
-then open http://localhost:8080/auth/dev?login=you to sign in, create a token
+then open http://localhost:8080/auth/dev, enter a name in the form to sign in, create a token
 under CLI tokens and run `passway login <token>`.
 
 In another, start something to expose on port 3000, for example:
@@ -140,8 +140,7 @@ passway-server --domain passway.example --db /var/lib/passway/p.db \
   --github-client-id <id> --tls-addr :443 --tls-cert cert.pem --tls-key key.pem
 ```
 
-For local development, `--dev-login` adds a passwordless `/auth/dev?login=<name>`
-sign-in. It only works on `localhost` domains:
+For local development, `--dev-login` adds a passwordless sign-in form at `/auth/dev`. It only works on `localhost` domains:
 
 ```sh
 passway-server --mode cloud --domain localhost --addr :8080 --db ./p.db --dev-login

@@ -39,6 +39,19 @@ func scanUser(r scanner) (User, error) {
 // UpsertGitHubUser inserts or updates by GitHubID. Login, name and avatar are
 // refreshed; plan and waitlist state are kept.
 func (s *Store) UpsertGitHubUser(ctx context.Context, u User) (User, bool, error) {
+	return s.upsertGitHubUser(ctx, u, -1)
+}
+
+// SignupGitHubUser upserts u like UpsertGitHubUser. When it creates the user,
+// in the same IMMEDIATE transaction, it waitlists them if admitted Free users
+// are already at freeCap, so concurrent signups never exceed freeCap. An
+// existing user keeps their state.
+func (s *Store) SignupGitHubUser(ctx context.Context, u User, freeCap int) (User, bool, error) {
+	return s.upsertGitHubUser(ctx, u, freeCap)
+}
+
+// upsertGitHubUser is the shared body; freeCap < 0 trusts u.Waitlisted.
+func (s *Store) upsertGitHubUser(ctx context.Context, u User, freeCap int) (User, bool, error) {
 	var out User
 	var created bool
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
@@ -55,6 +68,14 @@ func (s *Store) UpsertGitHubUser(ctx context.Context, u User) (User, bool, error
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			created = true
+			if freeCap >= 0 {
+				var n int
+				if err := tx.QueryRowContext(ctx,
+					`SELECT count(*) FROM users WHERE plan = 'free' AND waitlisted = 0`).Scan(&n); err != nil {
+					return err
+				}
+				u.Waitlisted = n >= freeCap
+			}
 			res, err := tx.ExecContext(ctx,
 				`INSERT INTO users (github_id, login, name, avatar_url, waitlisted, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
 				u.GitHubID, u.Login, u.Name, u.AvatarURL, u.Waitlisted, ts(time.Now()))

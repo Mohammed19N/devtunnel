@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -89,4 +92,73 @@ func TestCountUsersExcludesWaitlisted(t *testing.T) {
 	if err := s.SetPlan(ctx, 999, "pro"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+func TestSignupCapConcurrent(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	const cap, n = 5, 20
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := s.SignupGitHubUser(ctx, User{GitHubID: int64(1000 + i), Login: fmt.Sprintf("u%d", i)}, cap)
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	got, err := s.CountUsers(ctx, "free")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != cap {
+		t.Errorf("admitted free users = %d, want %d", got, cap)
+	}
+}
+
+func TestSignupWaitlistedNotCounted(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	a, created, err := s.SignupGitHubUser(ctx, User{GitHubID: 1, Login: "a"}, 1)
+	if err != nil || !created || a.Waitlisted {
+		t.Fatalf("A = %+v created=%v err=%v, want admitted", a, created, err)
+	}
+	for i, login := range []string{"b", "c"} {
+		u, created, err := s.SignupGitHubUser(ctx, User{GitHubID: int64(2 + i), Login: login}, 1)
+		if err != nil || !created || !u.Waitlisted {
+			t.Fatalf("%s = %+v created=%v err=%v, want waitlisted", login, u, created, err)
+		}
+	}
+	if n, _ := s.CountUsers(ctx, "free"); n != 1 {
+		t.Errorf("CountUsers(free) = %d, want 1", n)
+	}
+	// An existing user keeps their state on sign-in.
+	again, created, err := s.SignupGitHubUser(ctx, User{GitHubID: 1, Login: "a"}, 1)
+	if err != nil || created || again.Waitlisted {
+		t.Errorf("A again = %+v created=%v err=%v", again, created, err)
+	}
+}
+
+func TestOpenExisting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "none.db")
+	_, err := OpenExisting(path)
+	if err == nil || err.Error() != "no database at "+path {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Error("OpenExisting created the file")
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	st, err = OpenExisting(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
 }

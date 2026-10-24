@@ -35,7 +35,7 @@ type Config struct {
 
 	MinGitHubAge  time.Duration // 0 disables; the CLI default is 48h
 	FreeSignupCap int           // 0 = 1000
-	DevLogin      bool          // allow /auth/dev?login=X (only when BaseURL host is localhost or *.localhost)
+	DevLogin      bool          // allow the /auth/dev login form (only when BaseURL host is localhost or *.localhost)
 
 	Tunnels func(accountID string) []TunnelInfo // live tunnels for the dashboard
 	// Disconnect closes the live tunnels of accountID that use tokenID; it is
@@ -154,7 +154,8 @@ func (d *Dashboard) routes() {
 	m.HandleFunc("GET /login", d.handleLogin)
 	m.HandleFunc("GET /auth/github/callback", d.handleCallback)
 	if d.cfg.DevLogin {
-		m.HandleFunc("GET /auth/dev", d.handleDevLogin)
+		m.HandleFunc("GET /auth/dev", d.handleDevLoginForm)
+		m.HandleFunc("POST /auth/dev", d.handleDevLogin)
 	}
 	d.handlePost("/logout", d.handleLogout)
 	m.HandleFunc("GET /dashboard", d.page(d.handleDashboard))
