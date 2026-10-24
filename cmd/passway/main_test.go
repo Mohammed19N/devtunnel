@@ -369,6 +369,9 @@ func (cloudDir) Names(context.Context, server.Account) ([]string, error) {
 func (cloudDir) Owns(_ context.Context, _ server.Account, n string) (bool, error) {
 	return n == "quick-otter-42", nil
 }
+func (cloudDir) OwnsDomain(_ context.Context, _ server.Account, h string) (bool, error) {
+	return h == "hooks.example.com", nil
+}
 func (d cloudDir) Banned(context.Context, server.Account, string) (bool, error) { return d.banned, nil }
 func (cloudDir) AddUsage(context.Context, server.Account, int64) error          { return nil }
 func (cloudDir) Usage(context.Context, server.Account) (int64, error)           { return 0, nil }
@@ -478,5 +481,27 @@ func TestRunHTTPGaveUpMessage(t *testing.T) {
 	want := "error: could not reach https://x.example after 2m0s: dial: boom\n"
 	if code != 1 || errb.String() != want {
 		t.Fatalf("code=%d stderr=%q, want %q", code, errb.String(), want)
+	}
+}
+
+func TestRunHTTPDomainFlag(t *testing.T) {
+	su := startCloudEnv(t)
+	_, port, _ := strings.Cut(strings.TrimPrefix(su, "http://"), ":")
+	local := startLocal(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out, errb syncBuf
+	codeCh := make(chan int, 1)
+	cp := cfgPath(t)
+	go func() {
+		codeCh <- run(ctx, []string{"http", local.URL, "--domain", "hooks.example.com", "--server", su, "--inspect=false"}, &out, &errb, cp)
+	}()
+	want := "Forwarding   http://hooks.example.com:" + port + " -> "
+	waitFor(t, "Forwarding", func() bool { return strings.Contains(out.String(), want) })
+	stopRun(t, cancel, codeCh, &errb)
+
+	var o, e bytes.Buffer
+	if code := run(context.Background(), []string{"http", "3000", "--domain", "hooks.example.com", "--name", "acme"}, &o, &e, cfgPath(t)); code != 2 || !strings.Contains(e.String(), "use either --name or --domain") {
+		t.Fatalf("both flags: code=%d stderr=%q", code, e.String())
 	}
 }

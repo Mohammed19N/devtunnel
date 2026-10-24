@@ -4,6 +4,7 @@ package server
 import (
 	"fmt"
 	"math/rand/v2"
+	"net"
 	"regexp"
 	"strings"
 
@@ -29,6 +30,42 @@ func ValidateName(name string) error {
 		return &protocol.Error{Code: protocol.CodeInvalidName, Message: fmt.Sprintf("name %q is reserved", name)}
 	}
 	return nil
+}
+
+var labelRE = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// NormalizeDomain lowercases host, drops a trailing dot and checks that it can
+// be a custom domain on a server whose base domain is base: at most 253
+// characters, at least one dot, every label [a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?,
+// not an IP address, and neither base nor a name under it. Since it always
+// has a dot, it can never collide with a subdomain label in the registry. On
+// failure it returns a *protocol.Error with CodeInvalidName.
+func NormalizeDomain(host, base string) (string, error) {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	base = strings.TrimSuffix(strings.ToLower(base), ".")
+	invalid := func(format string, args ...any) error {
+		return &protocol.Error{Code: protocol.CodeInvalidName, Message: fmt.Sprintf(format, args...)}
+	}
+	if len(h) > 253 || !strings.Contains(h, ".") {
+		return "", invalid("%q isn't a valid domain name", host)
+	}
+	if net.ParseIP(h) != nil {
+		return "", invalid("%q is an IP address; use a domain name", host)
+	}
+	labels := strings.Split(h, ".")
+	for _, l := range labels {
+		if !labelRE.MatchString(l) {
+			return "", invalid("%q isn't a valid domain name", host)
+		}
+	}
+	// No top-level domain is all digits; this also rules out IPv4 look-alikes.
+	if strings.Trim(labels[len(labels)-1], "0123456789") == "" {
+		return "", invalid("%q isn't a valid domain name", host)
+	}
+	if base != "" && (h == base || strings.HasSuffix(h, "."+base)) {
+		return "", invalid("%q is on %s itself; use a reserved subdomain instead", host, base)
+	}
+	return h, nil
 }
 
 // blockedWords are substrings that make a subdomain unavailable (phishing /

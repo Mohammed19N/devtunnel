@@ -39,6 +39,7 @@ type Hello struct {
 	Name          string `json:"name,omitempty"`           // explicit; must be granted or fail
 	PreferredName string `json:"preferred_name,omitempty"` // best effort (reconnect)
 	SessionID     string `json:"session_id"`               // random per CLI process
+	Domain        string `json:"domain,omitempty"`         // verified custom domain (cloud only); excludes Name
 	ClientVersion string `json:"client_version,omitempty"`
 }
 

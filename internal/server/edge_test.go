@@ -136,3 +136,38 @@ func TestEdgeBusyFast503(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestEdgeRoutesCustomHost(t *testing.T) {
+	d := newFakeDirectory(PlanPro, "acme")
+	d.domains = []string{"hooks.example.com"}
+	_, ts := newCloudServer(t, d)
+	resp, sess := dialRaw(t, ts, domainHello("hooks.example.com", "A"))
+	if resp.Ready == nil {
+		t.Fatalf("ready: %+v", resp.Error)
+	}
+	hs := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "custom "+r.Host) })}
+	go hs.Serve(streamListener{sess})
+	t.Cleanup(func() { hs.Close() })
+	resp, lsess := dialRaw(t, ts, hello("acme", "B"))
+	if resp.Ready == nil {
+		t.Fatalf("label ready: %+v", resp.Error)
+	}
+	ls := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "label") })}
+	go ls.Serve(streamListener{lsess})
+	t.Cleanup(func() { ls.Close() })
+
+	u, _ := url.Parse(ts.URL)
+	if c, b := get(t, ts.URL, "HOOKS.example.com:"+u.Port(), ""); c != 200 || b != "custom HOOKS.example.com:"+u.Port() {
+		t.Fatalf("custom host = %d %q", c, b)
+	}
+	if c, b := get(t, ts.URL, "acme.localhost:"+u.Port(), ""); c != 200 || b != "label" {
+		t.Fatalf("label host = %d %q", c, b)
+	}
+	// A bare label is not a hostname: it must not reach the label's tunnel.
+	if c, b := get(t, ts.URL, "acme:"+u.Port(), ""); c == 200 || strings.Contains(b, "label") {
+		t.Fatalf("bare label routed: %d %q", c, b)
+	}
+	if c, _ := get(t, ts.URL, "other.example.com:"+u.Port(), "text/html"); c != 502 {
+		t.Fatalf("unknown custom host = %d, want offline page", c)
+	}
+}

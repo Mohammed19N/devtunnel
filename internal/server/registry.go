@@ -34,9 +34,12 @@ func (t *Tunnel) Requests() int64 { return t.requests.Load() }
 
 // ClaimRequest describes the name a client wants. With MaxTunnels > 0, Claim
 // refuses the tunnel when AccountID already has that many active tunnels under
-// other sessions.
+// other sessions. Host, when set, is a custom domain (already normalised and
+// ownership-checked by the caller) claimed as the key instead of a label;
+// a full hostname always has a dot, so it never collides with a label.
 type ClaimRequest struct {
 	Name, PreferredName, SessionID string
+	Host                           string
 	AccountID, PlanName            string
 	MaxTunnels                     int
 }
@@ -114,15 +117,29 @@ func (r *Registry) Claim(req ClaimRequest, t *Tunnel) (replaced *Tunnel, err err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	key := req.Name
+	if req.Host != "" {
+		key = req.Host
+	}
 	if req.MaxTunnels > 0 {
 		n := r.countAccount(req.AccountID, "")
 		// Taking over the same session's active tunnel replaces it, so it is not extra.
-		if cur, ok := r.active[req.Name]; ok && req.Name != "" && cur.SessionID == req.SessionID && cur.Account.ID == req.AccountID {
+		if cur, ok := r.active[key]; ok && key != "" && cur.SessionID == req.SessionID && cur.Account.ID == req.AccountID {
 			n--
 		}
 		if n >= req.MaxTunnels {
 			return nil, limitError(req.PlanName, req.MaxTunnels)
 		}
+	}
+
+	if req.Host != "" {
+		if req.Name != "" || !strings.Contains(req.Host, ".") {
+			return nil, &protocol.Error{Code: protocol.CodeInvalidName, Message: "invalid custom domain"}
+		}
+		if !r.available(req.Host, req) {
+			return nil, &protocol.Error{Code: protocol.CodeNameTaken, Message: req.Host + " is already in use by another session"}
+		}
+		return r.grant(req.Host, req, t), nil
 	}
 
 	if req.Name != "" {

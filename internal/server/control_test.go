@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -509,8 +510,11 @@ func TestNewWarnsWhenDirectoryAndAuthBothSet(t *testing.T) {
 
 type fakeDir struct{ errAuth }
 
-func (fakeDir) Names(context.Context, Account) ([]string, error)        { return nil, nil }
-func (fakeDir) Owns(context.Context, Account, string) (bool, error)     { return false, nil }
+func (fakeDir) Names(context.Context, Account) ([]string, error)    { return nil, nil }
+func (fakeDir) Owns(context.Context, Account, string) (bool, error) { return false, nil }
+func (fakeDir) OwnsDomain(context.Context, Account, string) (bool, error) {
+	return false, nil
+}
 func (fakeDir) Banned(context.Context, Account, string) (bool, error)   { return false, nil }
 func (fakeDir) AddUsage(context.Context, Account, int64) error          { return nil }
 func (fakeDir) Usage(context.Context, Account) (int64, error)           { return 0, nil }
@@ -523,6 +527,7 @@ type fakeDirectory struct {
 	mu       sync.Mutex
 	acc      Account
 	names    []string
+	domains  []string        // verified custom domains OwnsDomain reports
 	banned   map[string]bool // "" = the account itself
 	namesErr error
 }
@@ -549,6 +554,11 @@ func (d *fakeDirectory) Owns(_ context.Context, _ Account, name string) (bool, e
 		}
 	}
 	return false, nil
+}
+func (d *fakeDirectory) OwnsDomain(_ context.Context, _ Account, host string) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Contains(d.domains, host), nil
 }
 func (d *fakeDirectory) Banned(_ context.Context, _ Account, label string) (bool, error) {
 	d.mu.Lock()
@@ -803,5 +813,69 @@ func TestCloseTokenTunnels(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if s2.IsClosed() {
 		t.Fatal("tunnel of another token was closed")
+	}
+}
+
+func domainHello(domain, session string) protocol.Hello {
+	h := hello("", session)
+	h.Domain = domain
+	return h
+}
+
+func TestHandshakeCustomDomain(t *testing.T) {
+	d := newFakeDirectory(PlanPro, "quick-otter-42")
+	d.domains = []string{"hooks.example.com"}
+	srv, ts := newCloudServer(t, d)
+	resp, _ := dialRaw(t, ts, domainHello("Hooks.Example.com.", "s1"))
+	if resp.Ready == nil {
+		t.Fatalf("got %+v", resp.Error)
+	}
+	u, _ := url.Parse(ts.URL)
+	if want := "http://hooks.example.com:" + u.Port(); resp.Ready.URL != want || resp.Ready.Name != "hooks.example.com" {
+		t.Fatalf("ready = %+v, want URL %q", resp.Ready, want)
+	}
+	if tl := srv.TunnelsFor("u1"); len(tl) != 1 || tl[0].URL != "http://hooks.example.com:"+u.Port() {
+		t.Fatalf("TunnelsFor = %+v", tl)
+	}
+	// A second session cannot take the same host while it is active.
+	resp, _ = dialRaw(t, ts, domainHello("hooks.example.com", "s2"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeNameTaken {
+		t.Fatalf("second session: %+v", resp)
+	}
+}
+
+func TestHandshakeDomainNotOwned(t *testing.T) {
+	d := newFakeDirectory(PlanPro, "quick-otter-42")
+	d.domains = []string{"mine.example.com", "evil.localhost"}
+	_, ts := newCloudServer(t, d)
+	resp, _ := dialRaw(t, ts, domainHello("hooks.example.com", "s1"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeNameNotOwned ||
+		resp.Error.Message != `you don't own "hooks.example.com" or it isn't verified; add it in the dashboard` {
+		t.Fatalf("got %+v", resp)
+	}
+	// A host under the base domain is never a custom domain, whatever the directory says.
+	resp, _ = dialRaw(t, ts, domainHello("evil.localhost", "s1"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeInvalidName {
+		t.Fatalf("base-domain host: %+v", resp)
+	}
+}
+
+func TestHandshakeDomainAndName(t *testing.T) {
+	d := newFakeDirectory(PlanPro, "acme")
+	d.domains = []string{"hooks.example.com"}
+	_, ts := newCloudServer(t, d)
+	h := domainHello("hooks.example.com", "s1")
+	h.Name = "acme"
+	resp, _ := dialRaw(t, ts, h)
+	if resp.Error == nil || resp.Error.Code != protocol.CodeInvalidName || resp.Error.Message != "use either --name or --domain" {
+		t.Fatalf("got %+v", resp)
+	}
+}
+
+func TestHandshakeDomainSelfHosted(t *testing.T) {
+	_, ts := newTestServer(t, nil)
+	resp, _ := dialRaw(t, ts, domainHello("hooks.example.com", "s1"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeInvalidName || resp.Error.Message != "custom domains need cloud mode" {
+		t.Fatalf("got %+v", resp)
 	}
 }

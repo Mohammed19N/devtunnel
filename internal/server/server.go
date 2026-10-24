@@ -94,9 +94,13 @@ func New(cfg Config) *Server {
 	return s
 }
 
-// PublicURL returns the public URL for a tunnel name.
+// PublicURL returns the public URL for a tunnel name: a label under the base
+// domain, or a custom domain's full hostname (it has a dot).
 func (s *Server) PublicURL(name string) string {
 	host := name + "." + s.cfg.Domain
+	if strings.Contains(name, ".") {
+		host = name
+	}
 	if s.cfg.PublicPort != 0 {
 		host = net.JoinHostPort(host, strconv.Itoa(s.cfg.PublicPort))
 	}
@@ -190,11 +194,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// hostOnly lowercases host and strips any port.
+// hostOnly lowercases host and strips any port and a trailing dot.
 func hostOnly(host string) string {
 	host = strings.ToLower(host)
 	if h, _, err := net.SplitHostPort(host); err == nil {
-		return h
+		host = h
 	}
-	return host
+	return strings.TrimSuffix(host, ".")
 }

@@ -1,0 +1,26 @@
+{{define "domains"}}{{template "head" .}}
+<h1>Custom domains</h1>
+<p>Serve a tunnel on your own domain. Add it here, create the two DNS records shown, verify it, then run <code>passway http 3000 --domain &lt;domain&gt;</code>.</p>
+{{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+{{range .Domains}}<section>
+<h2>{{.Host}} {{if .Verified}}<span class="tag">Verified</span>{{else}}<span class="tag">Pending</span>{{end}}</h2>
+<table>
+<thead><tr><th scope="col">Type</th><th scope="col">Name</th><th scope="col">Value</th></tr></thead>
+<tbody>
+<tr><td>CNAME</td><td><code>{{.Host}}</code></td><td><code>{{$.EdgeHost}}</code></td></tr>
+<tr><td>TXT</td><td><code>{{.TXTName}}</code></td><td><code>{{.TXTValue}}</code></td></tr>
+</tbody>
+</table>
+{{if not .Verified}}<form class="row" method="post" action="/dashboard/domains/verify"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="host" value="{{.Host}}"><button type="submit" class="btn" aria-label="Verify {{.Host}}">Verify</button></form>{{end}}
+<form method="post" action="/dashboard/domains/remove"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="host" value="{{.Host}}"><button type="submit" class="link" aria-label="Remove {{.Host}}">Remove</button></form>
+</section>{{end}}
+{{if eq .DomainMax 0}}<p class="note">Custom domains are a Pro feature.</p>
+{{else if .DomainFull}}<p class="note">You've used all {{.DomainMax}} custom domains.</p>
+{{else}}<form class="row" method="post" action="/dashboard/domains">
+<input type="hidden" name="csrf" value="{{.CSRF}}">
+<label for="host">Add a domain</label>
+<input id="host" name="host" required maxlength="253" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="hooks.example.com">
+<button type="submit" class="btn">Add</button>
+</form>{{end}}
+<p><a href="/dashboard">Back to dashboard</a></p>
+{{template "foot" .}}{{end}}

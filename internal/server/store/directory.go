@@ -108,6 +108,31 @@ func (d *Directory) Owns(ctx context.Context, acc server.Account, name string) (
 	return false, nil
 }
 
+// OwnsDomain reports whether host is one of acc's verified custom domains and
+// within Plan.MaxCustomDomains (0 = none), oldest verified first. After a
+// downgrade the extras stay verified to the owner but are not usable.
+func (d *Directory) OwnsDomain(ctx context.Context, acc server.Account, host string) (bool, error) {
+	max := acc.Plan.MaxCustomDomains
+	id, ok := userID(acc)
+	if !ok || max <= 0 {
+		return false, nil
+	}
+	doms, err := d.S.verifiedDomains(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if len(doms) > max {
+		doms = doms[:max]
+	}
+	host = normHost(host)
+	for _, dm := range doms {
+		if dm.Host == host {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Banned reports whether acc (by id, or a legacy login ban) or the host label is banned.
 func (d *Directory) Banned(ctx context.Context, acc server.Account, label string) (bool, error) {
 	if id, ok := userID(acc); ok {

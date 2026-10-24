@@ -59,6 +59,7 @@ func listenInspector(addr string, fallback bool) (net.Listener, error) {
 func runHTTP(ctx context.Context, args []string, stdout, stderr io.Writer, configPath string) int {
 	fs := newFlagSet("http", stderr)
 	name := fs.String("name", "", "request a specific tunnel name")
+	domain := fs.String("domain", "", "serve on a verified custom domain (cloud only)")
 	server := fs.String("server", "", "passway server URL")
 	hostHeader := fs.String("host-header", "preserve", "preserve|rewrite")
 	insecure := fs.Bool("insecure", false, "skip TLS verification (dev only)")
@@ -77,7 +78,11 @@ func runHTTP(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 		args = fs.Args()[1:]
 	}
 	if len(pos) != 1 {
-		fmt.Fprintln(stderr, "usage: passway http [--name N] [--server URL] [--host-header preserve|rewrite] [--insecure] [--inspect=false] [--inspect-addr ADDR] <target>")
+		fmt.Fprintln(stderr, "usage: passway http [--name N | --domain D] [--server URL] [--host-header preserve|rewrite] [--insecure] [--inspect=false] [--inspect-addr ADDR] <target>")
+		return 2
+	}
+	if *name != "" && *domain != "" {
+		fmt.Fprintln(stderr, "error: use either --name or --domain")
 		return 2
 	}
 	if *hostHeader != "preserve" && *hostHeader != "rewrite" {
@@ -149,6 +154,7 @@ func runHTTP(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 		Server:        srv,
 		Token:         token,
 		Name:          *name,
+		Domain:        *domain,
 		Target:        target,
 		RewriteHost:   rewrite,
 		Insecure:      *insecure,

@@ -92,6 +92,17 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if hello.Domain != "" {
+		if hello.Name != "" {
+			fail(&protocol.Error{Code: protocol.CodeInvalidName, Message: "use either --name or --domain"})
+			return
+		}
+		if s.cfg.Directory == nil {
+			fail(&protocol.Error{Code: protocol.CodeInvalidName, Message: "custom domains need cloud mode"})
+			return
+		}
+	}
+
 	t := &Tunnel{session: sess, Account: acc, ClientVersion: hello.ClientVersion, ConnectedAt: time.Now()}
 	newTunnelProxy(t, s.cfg.MaxConnsPerTunnel, s.log, func() pageData { return s.pageBase(t) })
 	var replaced *Tunnel
@@ -173,6 +184,27 @@ func (s *Server) claimCloud(ctx context.Context, acc Account, hello protocol.Hel
 		AccountID:  acc.ID,
 		PlanName:   acc.Plan.Name,
 		MaxTunnels: acc.Plan.MaxTunnels,
+	}
+
+	if hello.Domain != "" {
+		host, err := NormalizeDomain(hello.Domain, s.cfg.Domain)
+		if err != nil {
+			return nil, err
+		}
+		owned, err := dir.OwnsDomain(ctx, acc, host)
+		if err != nil {
+			return nil, s.transient("domain ownership check", err)
+		}
+		if !owned {
+			return nil, &protocol.Error{Code: protocol.CodeNameNotOwned, Message: fmt.Sprintf("you don't own %q or it isn't verified; add it in the dashboard", host)}
+		}
+		if b, err := dir.Banned(ctx, acc, host); err != nil {
+			return nil, s.transient("ban check", err)
+		} else if b {
+			return nil, banned
+		}
+		req.Host = host
+		return s.registry.Claim(req, t)
 	}
 
 	if hello.Name != "" {

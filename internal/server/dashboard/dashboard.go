@@ -47,6 +47,11 @@ type Config struct {
 	// PlanChanged is called for each user whose plan a webhook changed. nil = no-op.
 	PlanChanged func(userID int64)
 
+	// Resolver answers the custom-domain DNS checks; nil = net.DefaultResolver.
+	Resolver Resolver
+	// EdgeHost is the CNAME target for custom domains; "" = "edge.<BaseURL host>".
+	EdgeHost string
+
 	Tunnels func(accountID string) []TunnelInfo // live tunnels for the dashboard
 	// Disconnect closes the live tunnels of accountID that use tokenID; it is
 	// called after the token is revoked. nil = no-op.
@@ -67,6 +72,7 @@ type Dashboard struct {
 	cfg           Config
 	log           *slog.Logger
 	origin        string // BaseURL's scheme://host[:port], as browsers send it in Origin
+	baseHost      string // BaseURL's host, without port
 	secure        bool   // BaseURL is https
 	sessionCookie string
 	stateCookie   string
@@ -142,6 +148,13 @@ func New(cfg Config) (*Dashboard, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.Resolver == nil {
+		cfg.Resolver = net.DefaultResolver
+	}
+	cfg.EdgeHost = strings.TrimSuffix(strings.ToLower(cfg.EdgeHost), ".")
+	if cfg.EdgeHost == "" {
+		cfg.EdgeHost = "edge." + host
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -150,6 +163,7 @@ func New(cfg Config) (*Dashboard, error) {
 		cfg:           cfg,
 		log:           cfg.Logger,
 		origin:        origin,
+		baseHost:      host,
 		secure:        u.Scheme == "https",
 		sessionCookie: "passway_session",
 		stateCookie:   "passway_oauth_state",
@@ -178,6 +192,10 @@ func (d *Dashboard) routes() {
 	m.HandleFunc("GET /dashboard/subdomains", d.page(d.active(d.handleSubdomains)))
 	d.handlePost("/dashboard/subdomains", d.active(d.handleClaim))
 	d.handlePost("/dashboard/subdomains/release", d.active(d.handleRelease))
+	m.HandleFunc("GET /dashboard/domains", d.page(d.active(d.handleDomains)))
+	d.handlePost("/dashboard/domains", d.active(d.handleAddDomain))
+	d.handlePost("/dashboard/domains/verify", d.active(d.handleVerifyDomain))
+	d.handlePost("/dashboard/domains/remove", d.active(d.handleRemoveDomain))
 	m.HandleFunc("GET /dashboard/tokens", d.page(d.active(d.handleTokens)))
 	d.handlePost("/dashboard/tokens", d.active(d.handleCreateToken))
 	d.handlePost("/dashboard/tokens/revoke", d.active(d.handleRevokeToken))
@@ -239,6 +257,10 @@ type view struct {
 	ProLabel    string // e.g. "$7 / month"
 	HasCustomer bool   // the user has a Stripe customer: show Manage billing
 	Upgraded    bool   // ?upgraded=1 after checkout
+	Domains     []domainRow
+	DomainMax   int    // the plan's MaxCustomDomains; 0 = custom domains are not included
+	DomainFull  bool   // all DomainMax are used: no add form
+	EdgeHost    string // the CNAME target for custom domains
 	Tokens      []tokenRow
 	NewToken    string // plaintext of a token created by this very request
 	NewName     string

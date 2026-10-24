@@ -38,6 +38,7 @@ type Config struct {
 	Server        string // "http://localhost:8080" or "https://passway.dev"
 	Token         string
 	Name          string // explicit --name
+	Domain        string // explicit --domain (a verified custom domain); excludes Name
 	Target        *url.URL
 	RewriteHost   bool // --host-header=rewrite
 	Insecure      bool // skip TLS verification (dev/self-signed only)
@@ -211,6 +212,7 @@ func (c *runner) once(ctx context.Context) (connected bool, err error) {
 		Version:       protocol.Version,
 		Token:         c.cfg.Token,
 		Name:          c.cfg.Name,
+		Domain:        c.cfg.Domain,
 		PreferredName: c.lastName,
 		SessionID:     c.sessionID,
 		ClientVersion: c.cfg.ClientVersion,

@@ -85,12 +85,24 @@ func newTunnelProxy(t *Tunnel, maxConns int, log *slog.Logger, footer func() pag
 	}
 }
 
-// serveEdge routes a request whose host is not the base domain.
+// serveEdge routes a request whose host is not the base domain. A host under
+// the base domain is looked up by its label; in cloud mode any other host is
+// looked up as a custom domain by its full name. Registry keys for custom
+// domains always contain a dot and labels never do, so neither lookup can
+// reach the other kind of tunnel.
 func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) {
 	label, ok := strings.CutSuffix(host, "."+s.cfg.Domain)
-	if !ok || label == "" || strings.Contains(label, ".") {
-		http.Error(w, "unknown host", http.StatusNotFound)
-		return
+	if ok {
+		if label == "" || strings.Contains(label, ".") {
+			http.Error(w, "unknown host", http.StatusNotFound)
+			return
+		}
+	} else {
+		if s.cfg.Directory == nil || !strings.Contains(host, ".") || net.ParseIP(host) != nil {
+			http.Error(w, "unknown host", http.StatusNotFound)
+			return
+		}
+		label = host
 	}
 	// In cloud mode /_passway/continue is reserved on every tunnel host (Free
 	// plans need it), so it never reaches a tunnel.

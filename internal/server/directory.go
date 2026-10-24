@@ -10,6 +10,9 @@ type Directory interface {
 	Names(ctx context.Context, acc Account) ([]string, error)
 	// Owns reports whether acc owns name.
 	Owns(ctx context.Context, acc Account, name string) (bool, error)
+	// OwnsDomain reports whether host is a verified custom domain of acc that
+	// its plan allows (Plan.MaxCustomDomains, oldest verified first).
+	OwnsDomain(ctx context.Context, acc Account, host string) (bool, error)
 	// Banned reports whether the account or host label is banned.
 	Banned(ctx context.Context, acc Account, label string) (bool, error)
 	// AddUsage records bytes for acc this month; Usage returns this month's total.
