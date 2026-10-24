@@ -105,6 +105,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	browserWarning := fs.Bool("browser-warning", false, "show a one-time warning page to browser visitors of tunnels")
 	rateLimit := fs.Int("rate-limit", 0, "max requests per minute per tunnel (0 = unlimited)")
 	mode := fs.String("mode", envOr("PASSWAY_MODE", "self-hosted"), "cloud or self-hosted (default $PASSWAY_MODE, else self-hosted)")
+	blockWords := fs.Bool("block-words", false, "refuse subdomains containing phishing-prone words")
 	cf := cloudFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -243,6 +244,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		RateLimit:         *rateLimit,
 		BrowserWarning:    *browserWarning,
 		CookieSecret:      cookieSecret,
+		BlockWords:        cloud || *blockWords,
 	}
 	var srv *server.Server // set below; the dashboard only reads it per request
 	if cloud {

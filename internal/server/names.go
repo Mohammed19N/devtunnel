@@ -17,7 +17,8 @@ var reserved = map[string]bool{
 	"_tunnel": true, "admin": true, "status": true, "docs": true,
 }
 
-// ValidateName reports whether name is an allowed subdomain. On failure it
+// ValidateName reports whether name is an allowed subdomain (syntax and
+// reserved names only; see BlockedWord for the phishing blocklist). On failure it
 // returns a *protocol.Error with CodeInvalidName.
 func ValidateName(name string) error {
 	if !nameRE.MatchString(name) {
@@ -27,22 +28,36 @@ func ValidateName(name string) error {
 	if reserved[name] {
 		return &protocol.Error{Code: protocol.CodeInvalidName, Message: fmt.Sprintf("name %q is reserved", name)}
 	}
-	if w := blockedWord(name); w != "" {
-		return &protocol.Error{Code: protocol.CodeInvalidName, Message: fmt.Sprintf("name %q contains a blocked word", name)}
-	}
 	return nil
 }
 
 // blockedWords are substrings that make a subdomain unavailable (phishing /
-// brand-impersonation abuse). Webhook senders (Stripe, GitHub, ...) are left
-// out on purpose: "stripe-hooks" is exactly the name users pick.
-var blockedWords = []string{"paypal", "login", "signin", "logon", "bank", "secure", "verify", "wallet", "password", "apple", "google", "microsoft", "office365", "outlook", "amazon", "facebook", "instagram", "whatsapp", "netflix", "coinbase", "binance", "metamask"}
+// brand-impersonation abuse). BlockedWord checks look-alike spellings too.
+var blockedWords = []string{"paypal", "login", "signin", "logon", "bank", "secure", "verify", "wallet", "password", "apple", "google", "microsoft", "office365", "outlook", "amazon", "facebook", "instagram", "whatsapp", "netflix", "coinbase", "binance", "metamask",
+	"stripe", "github", "gitlab", "bitbucket", "shopify", "slack", "twilio", "discord", "sendgrid", "mailgun", "square", "plaid", "hubspot", "zoom", "dropbox", "docusign", "adobe", "yahoo", "icloud", "steam", "roblox", "telegram", "tiktok", "twitter", "linkedin", "chase", "wellsfargo", "citibank", "hsbc", "venmo", "cashapp", "zelle", "usps", "fedex", "dhl"}
 
-// blockedWord returns the first blocked word contained in name, or "".
-func blockedWord(name string) string {
-	for _, w := range blockedWords {
-		if strings.Contains(name, w) {
-			return w
+var (
+	leetI = strings.NewReplacer("0", "o", "3", "e", "4", "a", "5", "s", "7", "t", "8", "b", "9", "g", "1", "i")
+	leetL = strings.NewReplacer("0", "o", "3", "e", "4", "a", "5", "s", "7", "t", "8", "b", "9", "g", "1", "l")
+	glyph = strings.NewReplacer("rn", "m", "vv", "w")
+)
+
+// normalForms returns the spellings of name that BlockedWord inspects.
+func normalForms(name string) []string {
+	name = strings.ToLower(name)
+	plain := strings.ReplaceAll(name, "-", "")
+	a, b := leetI.Replace(plain), leetL.Replace(plain)
+	return []string{name, plain, a, b, glyph.Replace(a), glyph.Replace(b)}
+}
+
+// BlockedWord returns the first blocked word found in any normalised form of
+// name (dashes removed, digits read as letters, "rn"/"vv" as "m"/"w"), or "".
+func BlockedWord(name string) string {
+	for _, f := range normalForms(name) {
+		for _, w := range blockedWords {
+			if strings.Contains(f, w) {
+				return w
+			}
 		}
 	}
 	return ""

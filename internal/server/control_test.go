@@ -148,6 +148,26 @@ func TestPreferredNameGrantedOnFreshServer(t *testing.T) {
 	}
 }
 
+func TestSelfHostedBlockWordsOff(t *testing.T) {
+	_, ts := newTestServer(t, nil)
+	resp, _ := dialRaw(t, ts, hello("paypal-test", "s1"))
+	if resp.Ready == nil || resp.Ready.Name != "paypal-test" {
+		t.Fatalf("got %+v", resp)
+	}
+}
+
+func TestBlockWordsOnRefuses(t *testing.T) {
+	_, ts := newTestServerCfg(t, nil, func(c *Config) { c.BlockWords = true })
+	resp, _ := dialRaw(t, ts, hello("paypal-test", "s1"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeInvalidName {
+		t.Fatalf("got %+v", resp)
+	}
+	resp, _ = dialRaw(t, ts, hello("acme", "s2"))
+	if resp.Ready == nil {
+		t.Fatalf("ordinary name refused: %+v", resp.Error)
+	}
+}
+
 func TestDisconnectReleases(t *testing.T) {
 	_, ts := newTestServer(t, nil)
 	resp, sess := dialRaw(t, ts, hello("acme", "A"))

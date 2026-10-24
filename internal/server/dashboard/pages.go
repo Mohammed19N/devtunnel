@@ -172,7 +172,11 @@ func (d *Dashboard) handleSubdomains(w http.ResponseWriter, r *http.Request, s *
 
 func (d *Dashboard) handleClaim(w http.ResponseWriter, r *http.Request, s *session) {
 	name := strings.ToLower(strings.TrimSpace(r.PostFormValue("name")))
-	if err := server.ValidateName(name); err != nil {
+	err := server.ValidateName(name)
+	if err == nil && server.BlockedWord(name) != "" {
+		err = &protocol.Error{Code: protocol.CodeInvalidName, Message: fmt.Sprintf("name %q contains a blocked word", name)}
+	}
+	if err != nil {
 		msg := err.Error()
 		var pe *protocol.Error
 		if errors.As(err, &pe) {
@@ -182,7 +186,7 @@ func (d *Dashboard) handleClaim(w http.ResponseWriter, r *http.Request, s *sessi
 		return
 	}
 	plan := server.PlanByName(s.User.Plan)
-	err := d.cfg.Store.ClaimSubdomain(r.Context(), s.User.ID, name, false, plan.MaxSubdomains)
+	err = d.cfg.Store.ClaimSubdomain(r.Context(), s.User.ID, name, false, plan.MaxSubdomains)
 	switch {
 	case errors.Is(err, store.ErrTaken):
 		d.renderSubdomains(w, r, s, http.StatusConflict, "name is taken")

@@ -33,6 +33,8 @@ type Config struct {
 	Directory        Directory // cloud account directory; nil = self-hosted
 	FreeBandwidthCap int64     // bytes per month across all Free accounts; 0 = 500<<30 when Directory != nil
 
+	BlockWords bool // handshake refuses names containing BlockedWord (cloud mode, or opt-in)
+
 	Dashboard http.Handler // serves base-domain paths other than /healthz and the tunnel path; nil = 404
 }
 

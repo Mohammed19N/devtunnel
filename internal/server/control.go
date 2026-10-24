@@ -82,6 +82,16 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.cfg.BlockWords {
+		if hello.Name != "" && BlockedWord(hello.Name) != "" {
+			fail(&protocol.Error{Code: protocol.CodeInvalidName, Message: fmt.Sprintf("name %q contains a blocked word", hello.Name)})
+			return
+		}
+		if BlockedWord(hello.PreferredName) != "" {
+			hello.PreferredName = ""
+		}
+	}
+
 	t := &Tunnel{session: sess, Account: acc, ClientVersion: hello.ClientVersion, ConnectedAt: time.Now()}
 	newTunnelProxy(t, s.cfg.MaxConnsPerTunnel, s.log)
 	var replaced *Tunnel
@@ -198,6 +208,10 @@ func (s *Server) claimCloud(ctx context.Context, acc Account, hello protocol.Hel
 	for _, name := range cands {
 		if err := ValidateName(name); err != nil {
 			s.log.Debug("skipping invalid owned name", "name", name, "err", err)
+			continue
+		}
+		if s.cfg.BlockWords && BlockedWord(name) != "" {
+			s.log.Debug("skipping blocked owned name", "name", name)
 			continue
 		}
 		if b, err := dir.Banned(ctx, acc, name); err != nil {

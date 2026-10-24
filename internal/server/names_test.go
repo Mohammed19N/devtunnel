@@ -1,10 +1,9 @@
 package server
 
 import (
+	"fmt"
 	"strings"
 	"testing"
-
-	"github.com/mohammed19n/passway/internal/protocol"
 )
 
 func TestValidateName(t *testing.T) {
@@ -29,17 +28,40 @@ func TestRandomNameValid(t *testing.T) {
 	}
 }
 
-func TestValidateNameBlocklist(t *testing.T) {
-	for _, n := range []string{"paypal", "my-paypal-help", "login-now", "secure-bank", "applesupport"} {
-		if err := ValidateName(n); err == nil {
-			t.Errorf("%q accepted", n)
-		} else {
-			wantCode(t, err, protocol.CodeInvalidName)
+func TestValidateNameSyntaxOnly(t *testing.T) {
+	for _, n := range []string{"paypal", "stripe-hooks", "applesupport"} {
+		if err := ValidateName(n); err != nil {
+			t.Errorf("ValidateName(%q) = %v, want nil (blocklist is separate)", n, err)
 		}
 	}
-	for _, n := range []string{"happy-otter-12", "stripe-hooks", "github-webhooks", "shopify-dev", "twilio-sms", "slack-events"} {
-		if err := ValidateName(n); err != nil {
-			t.Errorf("%q rejected: %v", n, err)
+}
+
+func TestBlockedWordLookalikes(t *testing.T) {
+	for _, n := range []string{"paypal", "my-paypal-help", "login-now", "secure-bank", "applesupport",
+		"stripe-hooks", "pay-pal-x", "paypa1", "g00gle-sso", "rnicrosoft", "vvellsfargo", "githubhooks"} {
+		if BlockedWord(n) == "" {
+			t.Errorf("%q not blocked", n)
+		}
+	}
+}
+
+func TestBlockedWordAllowsOrdinary(t *testing.T) {
+	for _, n := range []string{"acme", "hooks-dev", "my-shop-2", "quick-otter-42"} {
+		if w := BlockedWord(n); w != "" {
+			t.Errorf("%q blocked by %q", n, w)
+		}
+	}
+}
+
+func TestRandomNamesNeverBlocked(t *testing.T) {
+	for _, a := range adjectives {
+		for _, an := range animals {
+			for i := 0; i < 100; i++ {
+				n := fmt.Sprintf("%s-%s-%d", a, an, i)
+				if w := BlockedWord(n); w != "" {
+					t.Fatalf("%q blocked by %q", n, w)
+				}
+			}
 		}
 	}
 }
@@ -47,7 +69,7 @@ func TestValidateNameBlocklist(t *testing.T) {
 func TestWordListsAvoidBlocklist(t *testing.T) {
 	for _, list := range [][]string{adjectives, animals} {
 		for _, w := range list {
-			if b := blockedWord(w); b != "" {
+			if b := BlockedWord(w); b != "" {
 				t.Errorf("%q contains blocked word %q", w, b)
 			}
 		}
