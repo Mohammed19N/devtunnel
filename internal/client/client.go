@@ -217,15 +217,10 @@ func (c *runner) once(ctx context.Context) (connected bool, err error) {
 		SessionID:     c.sessionID,
 		ClientVersion: c.cfg.ClientVersion,
 	}
-	if err := protocol.WriteFrame(ctrl, hello); err != nil {
+	hresp, err := protocol.Handshake(ctrl, hello, handshakeTimeout)
+	if err != nil {
 		return false, err
 	}
-	var hresp protocol.HelloResponse
-	_ = ctrl.SetReadDeadline(time.Now().Add(handshakeTimeout))
-	if err := protocol.ReadFrame(ctrl, &hresp); err != nil {
-		return false, fmt.Errorf("reading handshake response: %w", err)
-	}
-	_ = ctrl.SetReadDeadline(time.Time{})
 	if hresp.Error != nil {
 		return false, hresp.Error
 	}

@@ -74,12 +74,10 @@ func dialRaw(t *testing.T, ts *httptest.Server, hello protocol.Hello) (protocol.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := protocol.WriteFrame(st, hello); err != nil {
-		t.Fatal(err)
-	}
-	var resp protocol.HelloResponse
-	_ = st.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if err := protocol.ReadFrame(st, &resp); err != nil {
+	// Handshake tolerates the write/reply race when the server rejects the
+	// hello and closes the session immediately.
+	resp, err := protocol.Handshake(st, hello, 5*time.Second)
+	if err != nil {
 		t.Fatal(err)
 	}
 	return resp, sess

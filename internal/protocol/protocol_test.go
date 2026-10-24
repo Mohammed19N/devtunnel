@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestFrameRoundTrip(t *testing.T) {
@@ -92,5 +95,38 @@ func TestReadyOmitsEmptyPlan(t *testing.T) {
 		if bytes.Contains(b, []byte(k)) {
 			t.Errorf("%s present in %s", k, b)
 		}
+	}
+}
+
+// shutdownStream mimics a yamux stream whose session shut down right after
+// the server replied: the write reports ErrSessionShutdown even though the
+// hello reached the server, and the reply is already buffered for reading.
+type shutdownStream struct {
+	reply io.Reader
+}
+
+func (s shutdownStream) Write([]byte) (int, error)     { return 0, errors.New("session shutdown") }
+func (s shutdownStream) Read(p []byte) (int, error)    { return s.reply.Read(p) }
+func (shutdownStream) SetReadDeadline(time.Time) error { return nil }
+
+func TestHandshakeWriteRaceKeepsServerError(t *testing.T) {
+	var reply bytes.Buffer
+	want := &Error{Code: CodeInvalidName, Message: "use either --name or --domain"}
+	if err := WriteFrame(&reply, HelloResponse{Error: want}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := Handshake(shutdownStream{&reply}, Hello{Version: Version}, time.Second)
+	if err != nil {
+		t.Fatalf("Handshake: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Message != want.Message {
+		t.Fatalf("got %+v", resp)
+	}
+}
+
+func TestHandshakeWriteFailureNoReply(t *testing.T) {
+	_, err := Handshake(shutdownStream{bytes.NewReader(nil)}, Hello{Version: Version}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "session shutdown") {
+		t.Fatalf("want the write error, got %v", err)
 	}
 }

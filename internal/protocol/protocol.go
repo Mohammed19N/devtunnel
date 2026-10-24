@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 // Version is the wire protocol version. Client and server must match.
@@ -126,4 +127,31 @@ func IsFatal(err error) bool {
 		return true
 	}
 	return false
+}
+
+// HandshakeStream is the control stream Handshake runs over.
+type HandshakeStream interface {
+	io.ReadWriter
+	SetReadDeadline(time.Time) error
+}
+
+// Handshake sends hello on the control stream and reads the server's reply.
+//
+// When the server rejects a hello it answers and closes the session at once.
+// yamux can then report the hello write as failed ("session shutdown") even
+// though the server received it, so a write error is not final: the reply may
+// already be buffered, and it carries the real reason. Only when no reply can
+// be read is the write error returned.
+func Handshake(st HandshakeStream, hello Hello, timeout time.Duration) (HelloResponse, error) {
+	var resp HelloResponse
+	werr := WriteFrame(st, hello)
+	_ = st.SetReadDeadline(time.Now().Add(timeout))
+	if err := ReadFrame(st, &resp); err != nil {
+		if werr != nil {
+			return resp, werr
+		}
+		return resp, fmt.Errorf("reading handshake response: %w", err)
+	}
+	_ = st.SetReadDeadline(time.Time{})
+	return resp, nil
 }
