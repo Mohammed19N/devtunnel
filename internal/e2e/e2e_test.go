@@ -210,6 +210,22 @@ func recvTimeout[T any](t *testing.T, ch <-chan T, d time.Duration) T {
 	}
 }
 
+// waitStoreLen polls until the store holds exactly n exchanges.
+func waitStoreLen(t *testing.T, s *inspector.Store, n int) []inspector.Summary {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		list := s.List()
+		if len(list) == n {
+			return list
+		}
+		if len(list) > n || time.Now().After(deadline) {
+			t.Fatalf("store has %d exchanges, want %d", len(list), n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func readAll(t *testing.T, r io.Reader) string {
 	t.Helper()
 	b, err := io.ReadAll(r)
@@ -523,10 +539,9 @@ func TestInspectorCaptureAndReplay(t *testing.T) {
 		t.Fatalf("first hit: sig %q, %d bytes", first.sig, len(first.body))
 	}
 
-	list := e.insp.Store().List()
-	if len(list) != 1 {
-		t.Fatalf("store has %d exchanges, want 1", len(list))
-	}
+	// The inspector records an exchange only after the handler chain
+	// returns, which can be after the client already saw the response.
+	list := waitStoreLen(t, e.insp.Store(), 1)
 	ex, ok := e.insp.Store().Get(list[0].ID)
 	if !ok || !bytes.Equal(ex.Request.Body.Data, fixture) || ex.Response.Status != 200 {
 		t.Fatalf("captured exchange: %+v", ex)
@@ -541,9 +556,7 @@ func TestInspectorCaptureAndReplay(t *testing.T) {
 	if !bytes.Equal(second.body, fixture) || second.sig != sig {
 		t.Fatalf("replayed hit: sig %q, %d bytes", second.sig, len(second.body))
 	}
-	if n := len(e.insp.Store().List()); n != 2 {
-		t.Fatalf("store has %d exchanges after replay, want 2", n)
-	}
+	waitStoreLen(t, e.insp.Store(), 2)
 }
 
 func TestInspectorStreamingStillWorks(t *testing.T) {
