@@ -1,6 +1,6 @@
 # Self-hosting Passway
 
-`passway-server` has two modes. Cloud mode (the default) adds accounts, a
+`passway-server` has two modes. Self-hosted is the default; cloud mode, selected with `--mode cloud` or `PASSWAY_MODE=cloud`, adds accounts, a
 GitHub-backed dashboard and plan limits. This page is about **self-hosted**
 mode: your own relay with no accounts and no dashboard.
 

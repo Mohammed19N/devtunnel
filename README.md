@@ -36,7 +36,7 @@ go run ./cmd/passway-server --domain localhost
 To try the cloud flow locally (accounts, dashboard, plans) instead:
 
 ```sh
-go run ./cmd/passway-server --domain localhost --db ./passway.db --dev-login
+go run ./cmd/passway-server --mode cloud --domain localhost --db ./passway.db --dev-login
 ```
 
 then open http://localhost:8080/auth/dev?login=you to sign in, create a token
@@ -144,7 +144,7 @@ For local development, `--dev-login` adds a passwordless `/auth/dev?login=<name>
 sign-in. It only works on `localhost` domains:
 
 ```sh
-passway-server --domain localhost --addr :8080 --db ./p.db --dev-login
+passway-server --mode cloud --domain localhost --addr :8080 --db ./p.db --dev-login
 ```
 
 Owner to-dos before a public launch:
