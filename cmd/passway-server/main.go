@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mohammed19n/passway/internal/proxyproto"
 	"github.com/mohammed19n/passway/internal/server"
 	"github.com/mohammed19n/passway/internal/server/billing"
 	"github.com/mohammed19n/passway/internal/server/dashboard"
@@ -109,6 +110,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	rateLimit := fs.Int("rate-limit", 0, "max requests per minute per tunnel (0 = unlimited)")
 	mode := fs.String("mode", envOr("PASSWAY_MODE", "self-hosted"), "cloud or self-hosted (default $PASSWAY_MODE, else self-hosted)")
 	blockWords := fs.Bool("block-words", false, "refuse subdomains containing phishing-prone words")
+	proxyProto := fs.Bool("proxy-protocol", false, "require a PROXY protocol v2 header on TLS connections (behind nginx stream passthrough)")
 	cf := cloudFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -191,7 +193,11 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 			}
 			return fmt.Errorf("listen on %s: %w", *tlsAddr, err)
 		}
-		tlsLn = tls.NewListener(ln, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+		var rawLn net.Listener = ln
+		if *proxyProto {
+			rawLn = proxyproto.NewListener(ln, 10*time.Second)
+		}
+		tlsLn = tls.NewListener(rawLn, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
 		addrs = append(addrs, ln.Addr().String())
 	}
 

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -14,6 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -534,5 +537,40 @@ func TestBillingFlagsPartial(t *testing.T) {
 	err = run(context.Background(), []string{"--mode", "cloud", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login"}, io.Discard, nil)
 	if err == nil || exitCode(err) != 2 || !strings.Contains(err.Error(), "--stripe-price-pro") || !strings.Contains(err.Error(), "PASSWAY_STRIPE_WEBHOOK_SECRET") {
 		t.Fatalf("key only: err = %v, exit %d", err, exitCode(err))
+	}
+}
+
+func TestServeHTTPWithProxy(t *testing.T) {
+	cert, key := writeSelfSigned(t, t.TempDir())
+	addrs, stop := start(t, []string{
+		"--mode", "self-hosted", "--domain", "localhost", "--addr", "",
+		"--tls-addr", "127.0.0.1:0", "--tls-cert", cert, "--tls-key", key, "--proxy-protocol",
+	})
+	raw, err := net.Dial("tcp", addrs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	hdr := append([]byte("\r\n\r\n\x00\r\nQUIT\n"), 0x21, 0x11, 0x00, 0x0c, 203, 0, 113, 7, 10, 0, 0, 1, 0x10, 0xe1, 0x01, 0xbb)
+	if _, err := raw.Write(hdr); err != nil {
+		t.Fatal(err)
+	}
+	tc := tls.Client(raw, &tls.Config{InsecureSkipVerify: true, ServerName: "localhost"})
+	if err := tc.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(tc, "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(tc), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("run returned %v, want nil", err)
 	}
 }
