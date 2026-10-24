@@ -11,7 +11,7 @@ import (
 )
 
 func TestCaptureRecordsExchange(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		w.Header().Set("X-Test", "y")
@@ -37,7 +37,7 @@ func TestCaptureRecordsExchange(t *testing.T) {
 }
 
 func TestCaptureTruncatesLargeBody(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	big := bytes.Repeat([]byte("a"), 3<<20)
 	var read int64
 	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -57,7 +57,7 @@ func TestCaptureTruncatesLargeBody(t *testing.T) {
 }
 
 func TestCaptureKeepsFlusher(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	release := make(chan struct{})
 	srv := httptest.NewServer(Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("first"))
@@ -78,7 +78,7 @@ func TestCaptureKeepsFlusher(t *testing.T) {
 }
 
 func TestCaptureHijack(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	hijackErr := make(chan error, 1)
 	srv := httptest.NewServer(Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, _, err := http.NewResponseController(w).Hijack()
@@ -110,7 +110,7 @@ func TestCaptureHijack(t *testing.T) {
 }
 
 func TestCaptureReplayOf(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	req := httptest.NewRequest("GET", "/", nil)
 	req = req.WithContext(WithReplayOf(req.Context(), 7))
@@ -122,7 +122,7 @@ func TestCaptureReplayOf(t *testing.T) {
 }
 
 func TestCaptureFillsReplayNewID(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	s.Add(&Exchange{}) // id 1
 	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	req := httptest.NewRequest("GET", "/", nil)
@@ -138,7 +138,7 @@ func TestCaptureFillsReplayNewID(t *testing.T) {
 }
 
 func TestCaptureSnapshotsRequestBeforeHandler(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Del("X-Orig")
 		r.URL.Path = "/rewritten"
@@ -155,7 +155,7 @@ func TestCaptureSnapshotsRequestBeforeHandler(t *testing.T) {
 }
 
 func TestCaptureDrainsUnreadBody(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/", strings.NewReader("0123456789")))
 	e, _ := s.Get(1)
@@ -165,7 +165,7 @@ func TestCaptureDrainsUnreadBody(t *testing.T) {
 }
 
 func TestCaptureDrainCapMarksTruncated(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", "/", bytes.NewReader(make([]byte, maxDrain+100))))
 	e, _ := s.Get(1)
@@ -176,7 +176,7 @@ func TestCaptureDrainCapMarksTruncated(t *testing.T) {
 }
 
 func TestCapturePanicRecords500AndRepanics(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { panic("boom") }))
 	func() {
 		defer func() {
@@ -193,7 +193,7 @@ func TestCapturePanicRecords500AndRepanics(t *testing.T) {
 }
 
 func TestCapturePanicMarksUnreadBodyTruncated(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body.Read(make([]byte, 2))
 		panic("boom")
@@ -209,7 +209,7 @@ func TestCapturePanicMarksUnreadBodyTruncated(t *testing.T) {
 }
 
 func TestCaptureClosedUnreadBodyIsTruncated(t *testing.T) {
-	s := NewStore(0)
+	s := NewStore(0, DefaultMaxTotalBytes)
 	h := Capture(s, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body.Read(make([]byte, 4))
 		r.Body.Close()

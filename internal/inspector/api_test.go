@@ -2,11 +2,15 @@ package inspector
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
+	"compress/zlib"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -373,5 +377,75 @@ func TestAPIEventsEndOnCloseStreams(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("new event stream not ended")
+	}
+}
+
+func gzipBytes(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	zw.Write(b)
+	zw.Close()
+	return buf.Bytes()
+}
+
+func detailFor(t *testing.T, enc string, body []byte) (raw []byte, got struct {
+	Response struct {
+		Body struct {
+			Data             []byte `json:"data"`
+			Decoded          []byte `json:"decoded"`
+			DecodedTruncated bool   `json:"decoded_truncated"`
+		} `json:"body"`
+	} `json:"response"`
+}) {
+	t.Helper()
+	in := newTestInspector()
+	h := http.Header{}
+	h.Set("Content-Encoding", enc)
+	id := in.Store().Add(&Exchange{Response: Response{Status: 200, Header: h, Body: Body{Data: body, Size: int64(len(body))}}})
+	rec := do(in, "GET", "/api/requests/"+strconv.FormatInt(id, 10), "127.0.0.1:4040", "", "")
+	if rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	return body, got
+}
+
+func TestAPIDecodesGzip(t *testing.T) {
+	gz := gzipBytes(t, []byte(`{"hello":"world"}`))
+	_, got := detailFor(t, "gzip", gz)
+	if string(got.Response.Body.Decoded) != `{"hello":"world"}` {
+		t.Fatalf("decoded = %q", got.Response.Body.Decoded)
+	}
+	if !bytes.Equal(got.Response.Body.Data, gz) {
+		t.Fatal("data must stay the raw bytes")
+	}
+}
+
+func TestAPIDecodesDeflate(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zlib.NewWriter(&buf)
+	zw.Write([]byte("plain"))
+	zw.Close()
+	_, got := detailFor(t, "deflate", buf.Bytes())
+	if string(got.Response.Body.Decoded) != "plain" {
+		t.Fatalf("decoded = %q", got.Response.Body.Decoded)
+	}
+}
+
+func TestAPIInvalidGzipNoDecoded(t *testing.T) {
+	_, got := detailFor(t, "gzip", []byte("not gzip at all"))
+	if len(got.Response.Body.Decoded) != 0 || got.Response.Body.DecodedTruncated {
+		t.Fatalf("expected no decoded, got %q", got.Response.Body.Decoded)
+	}
+}
+
+func TestAPIDecodedCapped(t *testing.T) {
+	gz := gzipBytes(t, bytes.Repeat([]byte("a"), 5<<20))
+	_, got := detailFor(t, "gzip", gz)
+	if len(got.Response.Body.Decoded) != MaxBody || !got.Response.Body.DecodedTruncated {
+		t.Fatalf("decoded len %d truncated %v", len(got.Response.Body.Decoded), got.Response.Body.DecodedTruncated)
 	}
 }

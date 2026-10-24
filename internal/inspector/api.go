@@ -2,6 +2,9 @@ package inspector
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	_ "embed"
 	"encoding/json"
 	"errors"
@@ -57,7 +60,7 @@ func (in *Inspector) UI() http.Handler {
 			http.Error(w, ErrNotFound.Error(), 404)
 			return
 		}
-		writeJSON(w, 200, e)
+		writeJSON(w, 200, withDecoded(e))
 	})
 	mux.HandleFunc("GET /api/requests/{id}/curl", func(w http.ResponseWriter, r *http.Request) {
 		e, ok := in.lookup(r)
@@ -216,4 +219,39 @@ func guard(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// withDecoded returns a copy of e whose bodies carry Decoded text when the
+// matching headers say gzip or deflate. The stored exchange is not touched.
+func withDecoded(e *Exchange) *Exchange {
+	c := *e
+	c.Request.Body = decodeBody(c.Request.Body, c.Request.Header)
+	c.Response.Body = decodeBody(c.Response.Body, c.Response.Header)
+	return &c
+}
+
+func decodeBody(b Body, h http.Header) Body {
+	enc := strings.ToLower(strings.TrimSpace(h.Get("Content-Encoding")))
+	if len(b.Data) == 0 || (enc != "gzip" && enc != "x-gzip" && enc != "deflate") {
+		return b
+	}
+	var r io.Reader
+	var err error
+	if enc == "deflate" {
+		if r, err = zlib.NewReader(bytes.NewReader(b.Data)); err != nil {
+			r = flate.NewReader(bytes.NewReader(b.Data)) // some servers send raw deflate
+			err = nil
+		}
+	} else {
+		r, err = gzip.NewReader(bytes.NewReader(b.Data))
+	}
+	if err != nil {
+		return b
+	}
+	out, _ := io.ReadAll(io.LimitReader(r, MaxBody+1)) // keep what decoded before any error
+	if len(out) > MaxBody {
+		out, b.DecodedTruncated = out[:MaxBody], true
+	}
+	b.Decoded = out
+	return b
 }

@@ -6,7 +6,7 @@ import (
 )
 
 func TestStoreRing(t *testing.T) {
-	s := NewStore(3)
+	s := NewStore(3, DefaultMaxTotalBytes)
 	for i := 0; i < 5; i++ {
 		s.Add(&Exchange{})
 	}
@@ -27,7 +27,7 @@ func TestStoreRing(t *testing.T) {
 }
 
 func TestStoreSubscribe(t *testing.T) {
-	s := NewStore(3)
+	s := NewStore(3, DefaultMaxTotalBytes)
 	ch, cancel := s.Subscribe()
 	id := s.Add(&Exchange{Request: Request{Method: "GET", URI: "/x"}})
 	select {
@@ -56,7 +56,7 @@ func TestStoreSubscribe(t *testing.T) {
 }
 
 func TestStoreSlowSubscriberDoesNotBlock(t *testing.T) {
-	s := NewStore(10)
+	s := NewStore(10, DefaultMaxTotalBytes)
 	_, cancel := s.Subscribe()
 	defer cancel()
 	done := make(chan struct{})
@@ -74,10 +74,43 @@ func TestStoreSlowSubscriberDoesNotBlock(t *testing.T) {
 }
 
 func TestStoreCapacity(t *testing.T) {
-	if c := NewStore(0).Capacity(); c != DefaultCapacity {
+	if c := NewStore(0, DefaultMaxTotalBytes).Capacity(); c != DefaultCapacity {
 		t.Fatalf("default capacity = %d", c)
 	}
-	if c := NewStore(7).Capacity(); c != 7 {
+	if c := NewStore(7, DefaultMaxTotalBytes).Capacity(); c != 7 {
 		t.Fatalf("capacity = %d", c)
+	}
+}
+
+func bigExchange(n int) *Exchange {
+	return &Exchange{Request: Request{Body: Body{Data: make([]byte, n)}}}
+}
+
+func TestStoreEvictsByBytes(t *testing.T) {
+	s := NewStore(0, 3<<20)
+	var first int64
+	for i := 0; i < 4; i++ {
+		id := s.Add(bigExchange(1 << 20))
+		if i == 0 {
+			first = id
+		}
+	}
+	if _, ok := s.Get(first); ok {
+		t.Fatal("first exchange should have been evicted")
+	}
+	if n := len(s.List()); n != 3 {
+		t.Fatalf("List = %d, want 3", n)
+	}
+}
+
+func TestStoreSingleHugeExchangeKept(t *testing.T) {
+	s := NewStore(0, 1<<20)
+	s.Add(bigExchange(1 << 10))
+	id := s.Add(bigExchange(2 << 20))
+	if _, ok := s.Get(id); !ok {
+		t.Fatal("huge exchange must be kept")
+	}
+	if n := len(s.List()); n != 1 {
+		t.Fatalf("List = %d, want 1", n)
 	}
 }

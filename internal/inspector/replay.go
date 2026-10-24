@@ -41,7 +41,7 @@ type Inspector struct {
 
 // New wraps next (the client's local proxy) with Capture. Handler() is what the tunnel serves.
 func New(capacity int, next http.Handler) *Inspector {
-	s := NewStore(capacity)
+	s := NewStore(capacity, DefaultMaxTotalBytes)
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Inspector{store: s, handler: Capture(s, next), streams: ctx, closeStreams: cancel}
 }

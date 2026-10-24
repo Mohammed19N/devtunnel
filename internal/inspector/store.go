@@ -13,11 +13,20 @@ const DefaultCapacity = 500
 // MaxBody is the most bytes of any one body kept in a record.
 const MaxBody = 1 << 20
 
+// DefaultMaxTotalBytes caps the sum of request and response body bytes kept in
+// a Store; the oldest exchanges are evicted first.
+const DefaultMaxTotalBytes = 64 << 20
+
 // Body is a captured message body.
 type Body struct {
 	Data      []byte `json:"data"` // at most MaxBody bytes (base64 in JSON)
 	Size      int64  `json:"size"` // full size seen on the wire
 	Truncated bool   `json:"truncated"`
+
+	// Decoded is Data after gzip/deflate decoding (at most MaxBody bytes). It is
+	// filled by the API for display only; the store keeps raw Data.
+	Decoded          []byte `json:"decoded,omitempty"`
+	DecodedTruncated bool   `json:"decoded_truncated,omitempty"`
 }
 
 // Request is a captured request.
@@ -80,17 +89,24 @@ type Event struct {
 type Store struct {
 	mu   sync.Mutex
 	cap  int
+	max  int64       // body-byte budget
+	used int64       // body bytes held
 	ring []*Exchange // oldest first
 	next int64
 	subs map[chan Event]struct{}
 }
 
-// NewStore returns a Store holding at most capacity exchanges (<= 0 means DefaultCapacity).
-func NewStore(capacity int) *Store {
+// NewStore returns a Store holding at most capacity exchanges (<= 0 means
+// DefaultCapacity) and at most maxTotal body bytes (<= 0 means DefaultMaxTotalBytes).
+// A single exchange over the byte budget is still kept, alone.
+func NewStore(capacity int, maxTotal int64) *Store {
 	if capacity <= 0 {
 		capacity = DefaultCapacity
 	}
-	return &Store{cap: capacity, subs: map[chan Event]struct{}{}}
+	if maxTotal <= 0 {
+		maxTotal = DefaultMaxTotalBytes
+	}
+	return &Store{cap: capacity, max: maxTotal, subs: map[chan Event]struct{}{}}
 }
 
 // Add assigns e.ID, stores e (evicting the oldest if full) and notifies subscribers
@@ -100,14 +116,25 @@ func (s *Store) Add(e *Exchange) int64 {
 	defer s.mu.Unlock()
 	s.next++
 	e.ID = s.next
-	if len(s.ring) >= s.cap {
-		copy(s.ring, s.ring[1:])
-		s.ring[len(s.ring)-1] = nil
-		s.ring = s.ring[:len(s.ring)-1]
+	sz := bodyBytes(e)
+	for len(s.ring) > 0 && (len(s.ring) >= s.cap || s.used+sz > s.max) {
+		s.evictOldest()
 	}
 	s.ring = append(s.ring, e)
+	s.used += sz
 	s.notify(Event{Summary: e.Summary()})
 	return e.ID
+}
+
+func (s *Store) evictOldest() {
+	s.used -= bodyBytes(s.ring[0])
+	copy(s.ring, s.ring[1:])
+	s.ring[len(s.ring)-1] = nil
+	s.ring = s.ring[:len(s.ring)-1]
+}
+
+func bodyBytes(e *Exchange) int64 {
+	return int64(len(e.Request.Body.Data) + len(e.Response.Body.Data))
 }
 
 // Capacity returns the maximum number of exchanges held.
@@ -141,6 +168,7 @@ func (s *Store) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ring = nil
+	s.used = 0
 	s.notify(Event{Clear: true})
 }
 
