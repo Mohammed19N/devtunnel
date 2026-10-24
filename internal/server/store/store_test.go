@@ -8,6 +8,11 @@ import (
 
 func TestOpenMigratesOnce(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "p.db")
+	files, err := migrationFS.ReadDir("migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := len(files)
 	for i := 0; i < 2; i++ {
 		s, err := Open(p)
 		if err != nil {
@@ -17,8 +22,8 @@ func TestOpenMigratesOnce(t *testing.T) {
 		if err := s.db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
-		if n != 1 {
-			t.Fatalf("open %d: schema_migrations rows = %d, want 1", i, n)
+		if n != want {
+			t.Fatalf("open %d: schema_migrations rows = %d, want %d", i, n, want)
 		}
 		s.Close()
 	}

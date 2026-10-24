@@ -1,0 +1,9 @@
+{
+  "id": "price_TEST",
+  "object": "price",
+  "currency": "usd",
+  "unit_amount": 700,
+  "recurring": {
+    "interval": "month"
+  }
+}

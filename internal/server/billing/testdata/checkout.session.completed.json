@@ -1,0 +1,17 @@
+{
+  "id": "evt_1Q0checkout",
+  "object": "event",
+  "type": "checkout.session.completed",
+  "created": 100,
+  "data": {
+    "object": {
+      "id": "cs_test_a1",
+      "object": "checkout.session",
+      "mode": "subscription",
+      "payment_status": "paid",
+      "client_reference_id": "1",
+      "customer": "cus_TEST1",
+      "subscription": "sub_TEST1"
+    }
+  }
+}

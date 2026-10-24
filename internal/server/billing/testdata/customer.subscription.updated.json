@@ -1,0 +1,14 @@
+{
+  "id": "evt_1Q0subupdated",
+  "object": "event",
+  "type": "customer.subscription.updated",
+  "created": 150,
+  "data": {
+    "object": {
+      "id": "sub_TEST1",
+      "object": "subscription",
+      "customer": "cus_TEST1",
+      "status": "active"
+    }
+  }
+}
