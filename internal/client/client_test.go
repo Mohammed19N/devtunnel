@@ -327,3 +327,75 @@ func TestRunNon101AfterConnectIsRetried(t *testing.T) {
 		t.Fatal("Run did not return")
 	}
 }
+
+func TestRunGivesUpBeforeFirstConnect(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+	cfg := testConfig(ts.URL)
+	cfg.giveUpAfter = 300 * time.Millisecond
+	done := runAsync(context.Background(), cfg)
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrGaveUp) {
+			t.Fatalf("Run = %v, want ErrGaveUp", err)
+		}
+		if !strings.Contains(err.Error(), "could not reach "+ts.URL+" after 300ms: ") {
+			t.Fatalf("message %q lacks server URL/copy", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not give up")
+	}
+}
+
+// After the first Ready, reconnects stay unlimited.
+func TestRunKeepsReconnectingAfterReady(t *testing.T) {
+	ts := httptest.NewUnstartedServer(nil)
+	tl := &trackListener{Listener: ts.Listener}
+	ts.Listener = tl
+	port := ts.Listener.Addr().(*net.TCPAddr).Port
+	srv := server.New(server.Config{
+		Domain: "localhost", PublicScheme: "http", PublicPort: port,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	var broken atomic.Bool
+	ts.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if broken.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		srv.ServeHTTP(w, r)
+	})
+	ts.Start()
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan protocol.Ready, 1)
+	cfg := testConfig("http://localhost:" + strconv.Itoa(port))
+	cfg.giveUpAfter = 300 * time.Millisecond
+	cfg.OnReady = func(r protocol.Ready) { ready <- r }
+	done := runAsync(ctx, cfg)
+	select {
+	case <-ready:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no ready")
+	}
+	broken.Store(true)
+	tl.closeAll()
+	select {
+	case err := <-done:
+		t.Fatalf("Run returned %v after Ready, want it to keep retrying", err)
+	case <-time.After(time.Second):
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return")
+	}
+}

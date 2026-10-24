@@ -179,21 +179,32 @@ func runHTTP(ctx context.Context, args []string, stdout, stderr io.Writer, confi
 			fmt.Fprintf(stdout, "%-7s %-40s %3d %6s\n", l.Method, path, l.Status, l.Duration.Round(time.Millisecond))
 		},
 	})
-	if err != nil {
-		var perr *protocol.Error
-		if errors.As(err, &perr) || ctx.Err() == nil {
-			if perr != nil {
-				fmt.Fprintf(stderr, "error: %s\n", perr.Message)
-				if perr.Code == protocol.CodeLimitReached || perr.Code == protocol.CodeNameNotOwned {
-					fmt.Fprintf(stderr, "manage your account at %s/dashboard\n", strings.TrimRight(srv, "/"))
-				}
-			} else {
-				fmt.Fprintf(stderr, "error: %v\n", err)
-			}
-			return 1
-		}
+	return reportRunError(ctx, stderr, srv, err)
+}
+
+// reportRunError prints a Run failure and returns the exit code.
+func reportRunError(ctx context.Context, stderr io.Writer, srv string, err error) int {
+	if err == nil {
+		return 0
 	}
-	return 0
+	var perr *protocol.Error
+	if !errors.As(err, &perr) && ctx.Err() != nil {
+		return 0
+	}
+	if perr != nil {
+		fmt.Fprintf(stderr, "error: %s\n", perr.Message)
+		if perr.Code == protocol.CodeLimitReached || perr.Code == protocol.CodeNameNotOwned {
+			fmt.Fprintf(stderr, "manage your account at %s/dashboard\n", strings.TrimRight(srv, "/"))
+		}
+		return 1
+	}
+	if errors.Is(err, client.ErrGaveUp) {
+		// Drop the sentinel prefix; the rest is the user-facing copy.
+		fmt.Fprintf(stderr, "error: %s\n", strings.TrimPrefix(err.Error(), client.ErrGaveUp.Error()+": "))
+		return 1
+	}
+	fmt.Fprintf(stderr, "error: %v\n", err)
+	return 1
 }
 
 // planLine formats the plan summary, or "" when there is nothing to show.

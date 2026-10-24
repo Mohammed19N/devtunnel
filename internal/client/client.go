@@ -23,6 +23,7 @@ const (
 	defaultInitialBackoff = 500 * time.Millisecond
 	maxBackoff            = 30 * time.Second
 	handshakeTimeout      = 10 * time.Second
+	defaultGiveUpAfter    = 2 * time.Minute
 )
 
 // RequestLog describes one proxied request.
@@ -49,11 +50,16 @@ type Config struct {
 	Handler http.Handler
 
 	initialBackoff time.Duration // test override
+	giveUpAfter    time.Duration // test override; 0 = defaultGiveUpAfter
 }
 
 // ErrNotPassway is returned (fatal) when the first-ever dial gets an HTTP
 // response other than 101, i.e. the server is not a Passway server.
 var ErrNotPassway = errors.New("client: server is not a Passway server")
+
+// ErrGaveUp is returned when no Ready was ever received and the server stayed
+// unreachable for the give-up window (2 minutes by default).
+var ErrGaveUp = errors.New("client: gave up connecting")
 
 // Run connects to the server and serves the tunnel, reconnecting on
 // non-fatal failures. It blocks until ctx is cancelled (returning nil) or a
@@ -80,6 +86,11 @@ func Run(ctx context.Context, cfg Config) error {
 	if initial <= 0 {
 		initial = defaultInitialBackoff
 	}
+	giveUp := cfg.giveUpAfter
+	if giveUp <= 0 {
+		giveUp = defaultGiveUpAfter
+	}
+	start := time.Now()
 	backoff := initial
 	for {
 		connected, err := c.once(ctx)
@@ -91,6 +102,14 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		if connected {
 			backoff = initial
+		}
+		// Only before the first Ready: after one successful connection we
+		// retry forever so laptop sleep and server deploys recover on their own.
+		if !c.connectedOnce && time.Since(start) >= giveUp {
+			if err == nil {
+				err = errors.New("connection closed")
+			}
+			return fmt.Errorf("%w: could not reach %s after %s: %v", ErrGaveUp, cfg.Server, giveUp, err)
 		}
 		if err != nil {
 			log.Warn("tunnel connection failed", "err", err)

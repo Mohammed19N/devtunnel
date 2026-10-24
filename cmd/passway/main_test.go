@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mohammed19n/passway/internal/client"
 	"github.com/mohammed19n/passway/internal/config"
 	"github.com/mohammed19n/passway/internal/protocol"
 	"github.com/mohammed19n/passway/internal/server"
@@ -466,5 +468,15 @@ func TestPlanLine(t *testing.T) {
 		if got := planLine(tc.r); got != tc.want {
 			t.Errorf("planLine(%+v) = %q, want %q", tc.r, got, tc.want)
 		}
+	}
+}
+
+func TestRunHTTPGaveUpMessage(t *testing.T) {
+	err := fmt.Errorf("%w: could not reach %s after %s: %v", client.ErrGaveUp, "https://x.example", 2*time.Minute, errors.New("dial: boom"))
+	var errb bytes.Buffer
+	code := reportRunError(context.Background(), &errb, "https://x.example", err)
+	want := "error: could not reach https://x.example after 2m0s: dial: boom\n"
+	if code != 1 || errb.String() != want {
+		t.Fatalf("code=%d stderr=%q, want %q", code, errb.String(), want)
 	}
 }
