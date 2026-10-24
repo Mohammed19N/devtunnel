@@ -76,9 +76,6 @@ func (d *Dashboard) handleAddDomain(w http.ResponseWriter, r *http.Request, s *s
 		}
 		d.renderDomains(w, r, s, http.StatusForbidden, msg)
 		return
-	case errors.Is(err, store.ErrTaken):
-		d.renderDomains(w, r, s, http.StatusConflict, fmt.Sprintf("%s is already verified by another account", host))
-		return
 	case err != nil:
 		d.internalError(w, "add domain", err)
 		return
@@ -133,12 +130,14 @@ func (d *Dashboard) handleVerifyDomain(w http.ResponseWriter, r *http.Request, s
 	switch err := d.cfg.Store.VerifyDomain(r.Context(), s.User.ID, host); {
 	case errors.Is(err, store.ErrTaken), errors.Is(err, store.ErrNotFound):
 		// Another account verified it between our DNS check and now.
-		d.renderDomains(w, r, s, http.StatusConflict, fmt.Sprintf("%s is already verified by another account", host))
+		d.renderDomains(w, r, s, http.StatusConflict, fmt.Sprintf("%s was just verified by another account", host))
 		return
 	case err != nil:
 		d.internalError(w, "verify domain", err)
 		return
 	}
+	// The fresh proof wins: close the previous owner's tunnel on the host.
+	d.cfg.DomainEvicted(host)
 	if err := d.cfg.Store.Audit(r.Context(), s.User.ID, "domain.verify", host); err != nil {
 		d.internalError(w, "audit", err)
 		return
@@ -156,6 +155,7 @@ func (d *Dashboard) handleRemoveDomain(w http.ResponseWriter, r *http.Request, s
 		d.internalError(w, "remove domain", err)
 		return
 	}
+	d.cfg.DomainEvicted(host)
 	if err := d.cfg.Store.Audit(r.Context(), s.User.ID, "domain.remove", host); err != nil {
 		d.internalError(w, "audit", err)
 		return

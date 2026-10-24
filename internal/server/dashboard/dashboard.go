@@ -51,6 +51,9 @@ type Config struct {
 	Resolver Resolver
 	// EdgeHost is the CNAME target for custom domains; "" = "edge.<BaseURL host>".
 	EdgeHost string
+	// DomainEvicted closes the live tunnels on a custom domain after it was
+	// removed or verified by a new owner. nil = no-op.
+	DomainEvicted func(host string)
 
 	Tunnels func(accountID string) []TunnelInfo // live tunnels for the dashboard
 	// Disconnect closes the live tunnels of accountID that use tokenID; it is
@@ -147,6 +150,9 @@ func New(cfg Config) (*Dashboard, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.DomainEvicted == nil {
+		cfg.DomainEvicted = func(string) {}
 	}
 	if cfg.Resolver == nil {
 		cfg.Resolver = net.DefaultResolver

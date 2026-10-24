@@ -879,3 +879,42 @@ func TestHandshakeDomainSelfHosted(t *testing.T) {
 		t.Fatalf("got %+v", resp)
 	}
 }
+
+func TestCloudDomainHostBanned(t *testing.T) {
+	d := newFakeDirectory(PlanPro, "acme")
+	d.domains = []string{"hooks.example.com"}
+	d.banned["hooks.example.com"] = true
+	_, ts := newCloudServer(t, d)
+	resp, _ := dialRaw(t, ts, domainHello("hooks.example.com", "s1"))
+	if resp.Error == nil || resp.Error.Code != protocol.CodeBanned {
+		t.Fatalf("got %+v", resp)
+	}
+}
+
+func TestCloseHostTunnels(t *testing.T) {
+	d := newFakeDirectory(PlanPro, "acme")
+	d.domains = []string{"hooks.example.com"}
+	srv, ts := newCloudServer(t, d)
+	resp, sess := dialRaw(t, ts, domainHello("hooks.example.com", "A"))
+	if resp.Ready == nil {
+		t.Fatalf("ready: %+v", resp.Error)
+	}
+	resp, other := dialRaw(t, ts, hello("acme", "B"))
+	if resp.Ready == nil {
+		t.Fatalf("label ready: %+v", resp.Error)
+	}
+	srv.CloseHostTunnels("HOOKS.example.com")
+	waitClosed(t, sess, "custom-domain session")
+	if other.IsClosed() {
+		t.Fatal("unrelated tunnel closed")
+	}
+	// The host is not held for the evicted account: a new owner (another
+	// account, another session) can take it at once.
+	d.mu.Lock()
+	d.acc = Account{ID: "u2", Login: "carol", Plan: PlanPro}
+	d.mu.Unlock()
+	resp, _ = dialRaw(t, ts, domainHello("hooks.example.com", "C"))
+	if resp.Ready == nil {
+		t.Fatalf("new owner blocked: %+v", resp.Error)
+	}
+}

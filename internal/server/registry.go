@@ -193,6 +193,18 @@ func (r *Registry) Release(t *Tunnel) {
 	r.held[t.Name] = hold{sessionID: t.SessionID, accountID: t.claimedBy, releasedAt: r.now()}
 }
 
+// Evict removes name's active tunnel, if any, and any hold on name, so a new
+// owner can claim it at once. It returns the evicted tunnel; the caller
+// closes its session (its later Release is a no-op).
+func (r *Registry) Evict(name string) *Tunnel {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t := r.active[name]
+	delete(r.active, name)
+	delete(r.held, name)
+	return t
+}
+
 // Lookup returns the active tunnel for name.
 func (r *Registry) Lookup(name string) (*Tunnel, bool) {
 	r.mu.Lock()

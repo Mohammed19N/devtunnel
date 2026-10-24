@@ -164,6 +164,19 @@ func (s *Server) CloseAccountTunnels(accountID string) {
 	}
 }
 
+// CloseHostTunnels closes the live tunnel on custom domain host and drops
+// its hold, e.g. after the domain was removed or verified by a new owner.
+func (s *Server) CloseHostTunnels(host string) {
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if !strings.Contains(host, ".") {
+		return // not a custom domain
+	}
+	if t := s.registry.Evict(host); t != nil && t.session != nil {
+		s.log.Info("closing tunnel on evicted custom domain", "name", t.Name, "account", t.Account.ID)
+		t.session.Close()
+	}
+}
+
 // CloseTunnels closes every active tunnel session. The server keeps accepting new tunnels.
 func (s *Server) CloseTunnels() {
 	for _, t := range s.registry.All() {

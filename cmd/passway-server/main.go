@@ -285,6 +285,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 			return out
 		}
 		dcfg.Disconnect = func(id string, tokenID int64) { srv.CloseTokenTunnels(id, tokenID) }
+		dcfg.DomainEvicted = func(host string) { srv.CloseHostTunnels(host) }
 		dash, err := dashboard.New(dcfg)
 		if err != nil {
 			closeListeners(plainLn, tlsLn)

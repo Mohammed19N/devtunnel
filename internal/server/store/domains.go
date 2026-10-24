@@ -36,8 +36,9 @@ func domainToken() (string, error) {
 
 // AddDomain records a pending custom domain for userID with a fresh token.
 // Adding one the user already has returns it unchanged. It fails with ErrLimit
-// when the user already has max domains (max 0 = none allowed) and with
-// ErrTaken when another user has verified host.
+// when the user already has max domains (max 0 = none allowed). Another
+// user's verification does not block it: domains change hands, and a fresh
+// DNS proof (VerifyDomain) evicts the previous owner.
 func (s *Store) AddDomain(ctx context.Context, userID int64, host string, max int) (CustomDomain, error) {
 	host = normHost(host)
 	var out CustomDomain
@@ -57,13 +58,6 @@ func (s *Store) AddDomain(ctx context.Context, userID int64, host string, max in
 		}
 		if max <= 0 || n >= max {
 			return ErrLimit
-		}
-		if err := tx.QueryRowContext(ctx,
-			`SELECT count(*) FROM custom_domains WHERE host = ? AND verified_at IS NOT NULL`, host).Scan(&n); err != nil {
-			return err
-		}
-		if n > 0 {
-			return ErrTaken
 		}
 		tok, err := domainToken()
 		if err != nil {
@@ -85,9 +79,11 @@ func (s *Store) AddDomain(ctx context.Context, userID int64, host string, max in
 }
 
 // VerifyDomain marks userID's row for host verified and, in the same
-// transaction, deletes every other user's pending row for host. The caller
-// checks DNS first. ErrNotFound: userID has no row for host; ErrTaken:
-// another user verified it first.
+// transaction, deletes every other user's row for host, pending or verified:
+// the caller has just checked userID's DNS proof, which beats any older one.
+// ErrNotFound: userID has no row for host (e.g. a concurrent verify by
+// another user deleted it). The partial unique index guarantees at most one
+// verified row per host.
 func (s *Store) VerifyDomain(ctx context.Context, userID int64, host string) error {
 	host = normHost(host)
 	err := s.inTx(ctx, func(tx *sql.Tx) error {
@@ -100,15 +96,16 @@ func (s *Store) VerifyDomain(ctx context.Context, userID int64, host string) err
 		if err != nil {
 			return err
 		}
-		if !verified.Valid {
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE custom_domains SET verified_at = ? WHERE host = ? AND user_id = ?`,
-				ts(time.Now()), host, userID); err != nil {
-				return err
-			}
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM custom_domains WHERE host = ? AND user_id != ?`, host, userID); err != nil {
+			return err
+		}
+		if verified.Valid {
+			return nil
 		}
 		_, err = tx.ExecContext(ctx,
-			`DELETE FROM custom_domains WHERE host = ? AND user_id != ? AND verified_at IS NULL`, host, userID)
+			`UPDATE custom_domains SET verified_at = ? WHERE host = ? AND user_id = ?`,
+			ts(time.Now()), host, userID)
 		return err
 	})
 	if isUnique(err) {

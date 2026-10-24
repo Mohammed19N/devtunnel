@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/mohammed19n/passway/internal/server"
@@ -42,16 +44,15 @@ func TestAddDomainPendingDoesNotBlockOwner(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].VerifiedAt == nil {
 		t.Fatalf("B's domains = %+v %v", list, err)
 	}
-	// A cannot re-add or verify it now.
-	if _, err := s.AddDomain(ctx, a.ID, "hooks.example.com", 2); !errors.Is(err, ErrTaken) {
-		t.Fatalf("A re-add: %v", err)
-	}
+	// A's old row is gone, so it cannot be verified.
 	if err := s.VerifyDomain(ctx, a.ID, "hooks.example.com"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("A verify: %v", err)
 	}
 }
 
 func TestAddDomainVerifiedTaken(t *testing.T) {
+	// A verified domain can change hands: C may add it, and C's fresh proof
+	// evicts B.
 	s := openTest(t)
 	ctx := context.Background()
 	b, c := mkUser(t, s, 2, "b"), mkUser(t, s, 3, "c")
@@ -61,18 +62,84 @@ func TestAddDomainVerifiedTaken(t *testing.T) {
 	if err := s.VerifyDomain(ctx, b.ID, "hooks.example.com"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.AddDomain(ctx, c.ID, "HOOKS.example.com.", 2); !errors.Is(err, ErrTaken) {
-		t.Fatalf("C add = %v, want ErrTaken", err)
+	dc, err := s.AddDomain(ctx, c.ID, "HOOKS.example.com.", 2)
+	if err != nil || dc.VerifiedAt != nil {
+		t.Fatalf("C add = %+v %v, want a pending row", dc, err)
 	}
-	// B removing it frees it.
-	if err := s.RemoveDomain(ctx, b.ID, "hooks.example.com"); err != nil {
+	// Until C verifies, B keeps it.
+	if list, _ := s.Domains(ctx, b.ID); len(list) != 1 || list[0].VerifiedAt == nil {
+		t.Fatalf("B before C verifies: %+v", list)
+	}
+	if err := s.VerifyDomain(ctx, c.ID, "hooks.example.com"); err != nil {
+		t.Fatalf("C verify: %v", err)
+	}
+	if list, _ := s.Domains(ctx, b.ID); len(list) != 0 {
+		t.Fatalf("B's verified row survived C's proof: %+v", list)
+	}
+	if list, _ := s.Domains(ctx, c.ID); len(list) != 1 || list[0].VerifiedAt == nil {
+		t.Fatalf("C's domains = %+v", list)
+	}
+	dir := &Directory{S: s}
+	if ok, _ := dir.OwnsDomain(ctx, server.Account{ID: strconv.FormatInt(b.ID, 10), Plan: server.PlanPro}, "hooks.example.com"); ok {
+		t.Fatal("B still owns the domain")
+	}
+	if err := s.RemoveDomain(ctx, c.ID, "hooks.example.com"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RemoveDomain(ctx, b.ID, "hooks.example.com"); !errors.Is(err, ErrNotFound) {
+	if err := s.RemoveDomain(ctx, c.ID, "hooks.example.com"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second remove = %v", err)
 	}
-	if _, err := s.AddDomain(ctx, c.ID, "hooks.example.com", 2); err != nil {
-		t.Fatalf("C add after release: %v", err)
+}
+
+func TestVerifyDomainRace(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	const n = 10
+	ids := make([]int64, n)
+	for i := range ids {
+		ids[i] = mkUser(t, s, int64(i+1), fmt.Sprintf("u%d", i)).ID
+		if _, err := s.AddDomain(ctx, ids[i], "hooks.example.com", 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	for _, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := s.VerifyDomain(ctx, id, "hooks.example.com"); err != nil && !errors.Is(err, ErrNotFound) {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	var rows, verified int
+	if err := s.db.QueryRow(`SELECT count(*), count(verified_at) FROM custom_domains WHERE host = 'hooks.example.com'`).Scan(&rows, &verified); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || verified != 1 {
+		t.Fatalf("rows=%d verified=%d, want exactly one verified row", rows, verified)
+	}
+}
+
+func TestHostBanCoversCustomDomain(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	dir := &Directory{S: s}
+	if err := s.AddBan(ctx, Ban{Kind: "host", Value: "Hooks.Example.com."}); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := dir.Banned(ctx, server.Account{}, "hooks.example.com"); err != nil || !b {
+		t.Fatalf("Banned = %v %v", b, err)
+	}
+	if _, hosts, _ := dir.BannedLists(ctx); len(hosts) != 1 || hosts[0] != "hooks.example.com" {
+		t.Fatalf("BannedLists hosts = %v", hosts)
+	}
+	if err := s.RemoveBan(ctx, "host", "hooks.example.com."); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := dir.Banned(ctx, server.Account{}, "hooks.example.com"); b {
+		t.Fatal("unban did not lift it")
 	}
 }
 

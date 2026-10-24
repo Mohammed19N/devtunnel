@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/url"
@@ -169,5 +170,33 @@ func TestEdgeRoutesCustomHost(t *testing.T) {
 	}
 	if c, _ := get(t, ts.URL, "other.example.com:"+u.Port(), "text/html"); c != 502 {
 		t.Fatalf("unknown custom host = %d, want offline page", c)
+	}
+}
+
+func TestEdgeHostBanCoversCustomDomain(t *testing.T) {
+	d := newUsageDir()
+	d.acc.Plan = PlanPro
+	d.domains = []string{"hooks.example.com"}
+	srv, ts := newCloudServer(t, d.fakeDirectory)
+	srv.cfg.Directory = d
+	resp, sess := dialRaw(t, ts, domainHello("hooks.example.com", "A"))
+	if resp.Ready == nil {
+		t.Fatalf("ready: %+v", resp.Error)
+	}
+	hs := &http.Server{Handler: okBackend()}
+	go hs.Serve(streamListener{sess})
+	t.Cleanup(func() { hs.Close() })
+	u, _ := url.Parse(ts.URL)
+	host := "hooks.example.com:" + u.Port()
+	if c, _ := get(t, ts.URL, host, ""); c != 200 {
+		t.Fatalf("before ban: %d", c)
+	}
+	d.umu.Lock()
+	d.banHost = []string{"Hooks.Example.com"}
+	d.umu.Unlock()
+	srv.pollBans(context.Background())
+	waitClosed(t, sess, "banned custom-domain session")
+	if c, b := get(t, ts.URL, host, ""); c != 403 || !strings.Contains(b, "this tunnel has been disabled") {
+		t.Fatalf("after ban: %d %q", c, b)
 	}
 }
