@@ -22,6 +22,7 @@ const (
 	pageWarning
 	pageBandwidth
 	pageBanned
+	pageBusy
 )
 
 type pageData struct {
@@ -30,6 +31,8 @@ type pageData struct {
 	RetryIn  int    // rate-limited only: seconds
 	Owner    string // warning only: GitHub login of the tunnel's owner
 	Title    string // set by renderPage
+	Footer   bool   // show the "Served by Passway" footer
+	HomeURL  string // the footer link: <scheme>://<domain>[:port]
 }
 
 // renderPage writes the edge page for kind with its status, Cache-Control:
@@ -55,6 +58,10 @@ func renderPage(w http.ResponseWriter, r *http.Request, kind pageKind, d pageDat
 	case pageBanned:
 		status, name, d.Title = http.StatusForbidden, "banned", "Tunnel disabled"
 		plain = "this tunnel has been disabled"
+	case pageBusy:
+		status, name, d.Title = http.StatusServiceUnavailable, "busy", "Tunnel busy"
+		plain = "tunnel is busy: too many concurrent connections"
+		w.Header().Set("Retry-After", "1")
 	default:
 		status, name, d.Title = http.StatusBadGateway, "offline", "Tunnel offline"
 		plain = fmt.Sprintf("tunnel %s is offline", d.Host)

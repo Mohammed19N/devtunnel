@@ -34,7 +34,8 @@ footer a{color:inherit;text-decoration:underline;text-underline-offset:2px}
 <div class="brand"><svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#5b5bf0"/><path d="M6 21h6c3 0 3-10 6-10h8" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="26" cy="11" r="2.4" fill="#fff"/></svg>Passway</div>
 {{end}}
 {{define "foot"}}
-<footer>Served by <a href="https://passway.run">Passway</a> &middot; passway.run</footer>
+{{if .Footer}}<footer>Served by <a href="{{.HomeURL}}">Passway</a></footer>
+{{end}}
 </main>
 </body>
 </html>
@@ -67,4 +68,9 @@ footer a{color:inherit;text-decoration:underline;text-underline-offset:2px}
 <div class="icon warn"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg></div>
 <h1>Tunnel disabled</h1>
 <p><strong>{{.Host}}</strong> has been disabled.</p>
+{{template "foot" .}}{{end}}
+{{define "busy"}}{{template "head" .}}
+<div class="icon warn"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></div>
+<h1>Tunnel busy</h1>
+<p><strong>{{.Host}}</strong> is busy: too many concurrent connections. Try again in a moment.</p>
 {{template "foot" .}}{{end}}

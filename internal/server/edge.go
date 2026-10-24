@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +17,7 @@ import (
 
 // newTunnelProxy builds t's reverse proxy and transport. t.Name is read at
 // request time; Registry.Claim sets it before the tunnel becomes visible.
-func newTunnelProxy(t *Tunnel, maxConns int, log *slog.Logger) {
+func newTunnelProxy(t *Tunnel, maxConns int, log *slog.Logger, footer func() pageData) {
 	t.transport = &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			type result struct {
@@ -73,13 +74,13 @@ func newTunnelProxy(t *Tunnel, maxConns int, log *slog.Logger) {
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if errors.Is(err, errBandwidth) {
-				renderPage(w, r, pageBandwidth, pageData{Host: r.Host})
+				renderPage(w, r, pageBandwidth, footer().withHost(r.Host))
 				return
 			}
 			if !errors.Is(err, context.Canceled) {
 				log.Warn("proxy error", "name", t.Name, "err", err)
 			}
-			renderPage(w, r, pageOffline, pageData{Host: r.Host})
+			renderPage(w, r, pageOffline, footer().withHost(r.Host))
 		},
 	}
 }
@@ -102,21 +103,22 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 		return
 	}
 	cloud := s.cfg.Directory != nil
+	pd := func(t *Tunnel) pageData { return s.pageBase(t).withHost(r.Host) }
 	// A banned host is refused even after its session is gone.
 	if cloud && s.bans.Load().banned(Account{}, label) {
-		renderPage(w, r, pageBanned, pageData{Host: r.Host})
+		renderPage(w, r, pageBanned, pd(nil))
 		return
 	}
 	t, ok := s.registry.Lookup(label)
 	if !ok {
-		renderPage(w, r, pageOffline, pageData{Host: r.Host})
+		renderPage(w, r, pageOffline, pd(nil))
 		return
 	}
 	acc := t.Account
 	warn, rate := s.cfg.BrowserWarning, s.cfg.RateLimit
 	if cloud {
 		if s.bans.Load().banned(acc, t.Name) {
-			renderPage(w, r, pageBanned, pageData{Host: r.Host})
+			renderPage(w, r, pageBanned, pd(t))
 			return
 		}
 		warn = acc.Plan.Warning || (acc.Plan.Name == PlanUnlimited.Name && s.cfg.BrowserWarning)
@@ -125,7 +127,8 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 		}
 	}
 	if warn && needsWarning(r, s.cfg.CookieSecret) {
-		d := pageData{Host: r.Host, Continue: continuePath + "?to=" + url.QueryEscape(r.URL.RequestURI())}
+		d := pd(t)
+		d.Continue = continuePath + "?to=" + url.QueryEscape(r.URL.RequestURI())
 		if cloud {
 			d.Owner = acc.Login
 		}
@@ -136,16 +139,25 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 		return s.meter.Over(acc) || (acc.Plan.Name == PlanFree.Name && s.meter.FreeCapHit())
 	}
 	if s.meter != nil && over() {
-		renderPage(w, r, pageBandwidth, pageData{Host: r.Host})
+		renderPage(w, r, pageBandwidth, pd(t))
 		return
 	}
 	if rate > 0 && s.limiter != nil {
 		if ok, retry := s.limiter.AllowN(t.Name, rate); !ok {
 			secs := int((retry + time.Second - 1) / time.Second)
-			renderPage(w, r, pageRateLimited, pageData{Host: r.Host, RetryIn: max(secs, 1)})
+			d := pd(t)
+			d.RetryIn = max(secs, 1)
+			renderPage(w, r, pageRateLimited, d)
 			return
 		}
 	}
+	// Fast-fail at the cap instead of queueing in the transport.
+	if t.active.Add(1) > int32(s.cfg.MaxConnsPerTunnel) {
+		t.active.Add(-1)
+		renderPage(w, r, pageBusy, pd(t))
+		return
+	}
+	defer t.active.Add(-1)
 	t.requests.Add(1)
 	if s.meter != nil {
 		m := &transferMeter{add: func(n int64) { s.meter.Add(acc, n) }, over: over}
@@ -155,4 +167,25 @@ func (s *Server) serveEdge(w http.ResponseWriter, r *http.Request, host string) 
 		w = &countingWriter{ResponseWriter: w, m: m}
 	}
 	t.proxy.ServeHTTP(w, r)
+}
+
+// withHost returns d with Host set.
+func (d pageData) withHost(host string) pageData {
+	d.Host = host
+	return d
+}
+
+// pageBase returns the footer fields for a page of t (nil = unknown host).
+// Self-hosted servers never show the footer; in cloud mode it shows for
+// unknown hosts and for plans with Branding.
+func (s *Server) pageBase(t *Tunnel) pageData {
+	d := pageData{Footer: s.cfg.Directory != nil && (t == nil || t.Account.Plan.Branding)}
+	if d.Footer {
+		host := s.cfg.Domain
+		if s.cfg.PublicPort != 0 {
+			host = net.JoinHostPort(host, strconv.Itoa(s.cfg.PublicPort))
+		}
+		d.HomeURL = s.cfg.PublicScheme + "://" + host
+	}
+	return d
 }

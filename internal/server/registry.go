@@ -22,7 +22,8 @@ type Tunnel struct {
 	ConnectedAt   time.Time
 
 	requests  atomic.Int64
-	claimedBy string // ClaimRequest.AccountID; its holds are free to the same account
+	active    atomic.Int32 // requests in flight through the edge
+	claimedBy string       // ClaimRequest.AccountID; its holds are free to the same account
 	session   *yamux.Session
 	proxy     *httputil.ReverseProxy
 	transport *http.Transport

@@ -93,7 +93,7 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	t := &Tunnel{session: sess, Account: acc, ClientVersion: hello.ClientVersion, ConnectedAt: time.Now()}
-	newTunnelProxy(t, s.cfg.MaxConnsPerTunnel, s.log)
+	newTunnelProxy(t, s.cfg.MaxConnsPerTunnel, s.log, func() pageData { return s.pageBase(t) })
 	var replaced *Tunnel
 	if s.cfg.Directory != nil {
 		replaced, err = s.claimCloud(r.Context(), acc, hello, t)

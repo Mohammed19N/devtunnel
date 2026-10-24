@@ -342,10 +342,18 @@ func TestTunnelConnCap(t *testing.T) {
 	}
 	close(release)
 	wg.Wait()
-	for i, c := range codes {
-		if c != 200 {
-			t.Errorf("request %d: status %d, want 200", i, c)
+	// The cap answers a fast 503 instead of queueing: two get through.
+	var ok, busy int
+	for _, c := range codes {
+		switch c {
+		case 200:
+			ok++
+		case 503:
+			busy++
 		}
+	}
+	if ok != 2 || busy != 3 {
+		t.Errorf("statuses = %v, want two 200 and three 503", codes)
 	}
 }
 

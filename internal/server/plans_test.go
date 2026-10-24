@@ -6,10 +6,10 @@ import (
 )
 
 func TestPlanValues(t *testing.T) {
-	if want := (Plan{Name: "free", MaxTunnels: 1, MaxSubdomains: 1, RateLimit: 60, Bandwidth: 1 << 30, Warning: true}); PlanFree != want {
+	if want := (Plan{Name: "free", MaxTunnels: 1, MaxSubdomains: 1, RateLimit: 60, Bandwidth: 1 << 30, Warning: true, MaxCustomDomains: 0, Branding: true}); PlanFree != want {
 		t.Fatalf("PlanFree = %+v, want %+v", PlanFree, want)
 	}
-	if want := (Plan{Name: "pro", MaxTunnels: 5, MaxSubdomains: 5, RateLimit: 600, Bandwidth: 50 << 30}); PlanPro != want {
+	if want := (Plan{Name: "pro", MaxTunnels: 5, MaxSubdomains: 5, RateLimit: 600, Bandwidth: 50 << 30, MaxCustomDomains: 2, Branding: false}); PlanPro != want {
 		t.Fatalf("PlanPro = %+v, want %+v", PlanPro, want)
 	}
 	if want := (Plan{Name: "unlimited"}); PlanUnlimited != want {
