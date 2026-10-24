@@ -106,6 +106,12 @@ func proStatus(s string) bool {
 	return s == "active" || s == "trialing" || s == "past_due"
 }
 
+// terminalStatus reports whether a subscription in this status can never
+// become active again.
+func terminalStatus(s string) bool {
+	return s == "canceled" || s == "incomplete_expired"
+}
+
 // Apply records ev (once, by ID) and applies its effect in one transaction.
 // planChanged lists the users whose plan actually changed. A redelivered
 // event changes nothing. An error means nothing was recorded, so the webhook
@@ -225,9 +231,22 @@ func (a applier) subscription() error {
 		return err
 	}
 	deleted := a.ev.Type == "customer.subscription.deleted"
+	created := a.ev.Type == "customer.subscription.created"
 	pro := proStatus(s.Status) && !deleted
 	storedPro := proStatus(stored.Status)
+	current := stored.SubscriptionID == "" || s.ID == stored.SubscriptionID
 	switch {
+	case !current && !(created && pro):
+		// Only checkout.session.completed or a (Pro) .created may switch the
+		// stored subscription. Anything else about another subscription is
+		// ignored, so it can neither end nor take over the current one.
+		a.log.Info("billing: event for a non-current subscription ignored", "user", userID, "subscription", s.ID)
+		return nil
+	case current && terminalStatus(stored.Status):
+		// canceled and incomplete_expired are final in Stripe; nothing later
+		// about the same subscription can revive it, whatever its timestamp.
+		a.log.Info("billing: event for an ended subscription ignored", "user", userID, "subscription", s.ID)
+		return nil
 	case a.ev.Created < stored.EventCreated:
 		a.log.Info("billing: stale subscription event ignored", "user", userID)
 		return nil
@@ -235,10 +254,6 @@ func (a applier) subscription() error {
 		// Same second: Checkout's "incomplete" created-event can arrive after
 		// activation. Subscriptions never go back to incomplete, so keep Pro.
 		a.log.Info("billing: same-second downgrade ignored", "user", userID, "status", s.Status)
-		return nil
-	case stored.SubscriptionID != "" && s.ID != stored.SubscriptionID && !pro:
-		// A non-current (older) subscription ending does not end the current one.
-		a.log.Info("billing: event for a non-current subscription ignored", "user", userID, "subscription", s.ID)
 		return nil
 	}
 	if err := a.b.PutSubscription(store.Subscription{

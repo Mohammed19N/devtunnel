@@ -300,7 +300,7 @@ func TestApplyPastDueKeepsPro(t *testing.T) {
 			t.Fatalf("%s: changed=%v plan=%s", status, changed, plan(t, st, u.ID))
 		}
 	}
-	for i, status := range []string{"unpaid", "incomplete_expired", "canceled", "paused", "incomplete"} {
+	for i, status := range []string{"unpaid", "paused", "incomplete"} {
 		changed := mustApply(t, st, fixtureEvent(t, "customer.subscription.updated.json", func(env, obj map[string]any) {
 			env["id"], env["created"] = fmt.Sprintf("evt_down_%d", i), 200+2*i
 			obj["status"] = status
@@ -313,6 +313,21 @@ func TestApplyPastDueKeepsPro(t *testing.T) {
 		}))
 		if plan(t, st, u.ID) != "pro" {
 			t.Fatalf("%s: back to active did not restore pro", status)
+		}
+	}
+	// Terminal statuses are final for that subscription.
+	for i, status := range []string{"incomplete_expired", "canceled"} {
+		st := openStore(t)
+		u := paidUser(t, st)
+		mustApply(t, st, fixtureEvent(t, "customer.subscription.updated.json", func(env, obj map[string]any) {
+			env["id"], env["created"] = fmt.Sprintf("evt_term_%d", i), 300
+			obj["status"] = status
+		}))
+		changed := mustApply(t, st, fixtureEvent(t, "customer.subscription.updated.json", func(env, _ map[string]any) {
+			env["id"], env["created"] = fmt.Sprintf("evt_after_%d", i), 301
+		}))
+		if len(changed) != 0 || plan(t, st, u.ID) != "free" {
+			t.Fatalf("%s then active: changed=%v plan=%s", status, changed, plan(t, st, u.ID))
 		}
 	}
 }
@@ -370,5 +385,69 @@ func TestApplySameSecondNoDowngrade(t *testing.T) {
 	}))
 	if !slices.Equal(changed, []int64{u.ID}) || plan(t, st, u.ID) != "free" {
 		t.Fatalf("same-second deletion ignored: changed=%v plan=%s", changed, plan(t, st, u.ID))
+	}
+}
+
+// Fix round 1, finding 1: a same-second .updated active after .deleted must
+// not bring Pro back; a canceled subscription is final.
+func TestApplySameSecondUpdateAfterDelete(t *testing.T) {
+	st := openStore(t)
+	u := paidUser(t, st)
+	mustApply(t, st, fixtureEvent(t, "customer.subscription.deleted.json", func(env, _ map[string]any) {
+		env["created"] = 200
+	}))
+	changed := mustApply(t, st, fixtureEvent(t, "customer.subscription.updated.json", func(env, obj map[string]any) {
+		env["created"] = 200
+		obj["id"], obj["status"] = "sub_TEST1", "active"
+	}))
+	if len(changed) != 0 || plan(t, st, u.ID) != "free" {
+		t.Fatalf("Pro came back after deletion: changed=%v plan=%s", changed, plan(t, st, u.ID))
+	}
+	sub, _ := st.SubscriptionByUser(context.Background(), u.ID)
+	if sub.Status != "canceled" {
+		t.Fatalf("subscription = %+v", sub)
+	}
+}
+
+// Fix round 1, finding 2: an .updated for a non-current subscription must
+// not take over the stored subscription, so the real one's deletion still
+// downgrades.
+func TestApplyUpdatedOtherSubscriptionIgnored(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	u := paidUser(t, st) // stored sub_TEST1 (sub_A) active @100
+	changed := mustApply(t, st, fixtureEvent(t, "customer.subscription.updated.json", func(env, obj map[string]any) {
+		env["id"], env["created"] = "evt_subB", 150
+		obj["id"], obj["status"] = "sub_B", "past_due"
+	}))
+	if len(changed) != 0 {
+		t.Fatalf("planChanged = %v", changed)
+	}
+	if sub, _ := st.SubscriptionByUser(ctx, u.ID); sub.SubscriptionID != "sub_TEST1" || sub.Status != "active" {
+		t.Fatalf("stored subscription switched: %+v", sub)
+	}
+	changed = mustApply(t, st, fixtureEvent(t, "customer.subscription.deleted.json", func(env, _ map[string]any) {
+		env["created"] = 200
+	}))
+	if !slices.Equal(changed, []int64{u.ID}) || plan(t, st, u.ID) != "free" {
+		t.Fatalf("deletion of the real subscription ignored: changed=%v plan=%s", changed, plan(t, st, u.ID))
+	}
+}
+
+// customer.subscription.created for a new subscription may switch the stored one.
+func TestApplyCreatedNewSubscriptionSwitches(t *testing.T) {
+	st := openStore(t)
+	ctx := context.Background()
+	u := paidUser(t, st)
+	mustApply(t, st, fixtureEvent(t, "customer.subscription.deleted.json", nil)) // sub_TEST1 canceled @200
+	changed := mustApply(t, st, fixtureEvent(t, "customer.subscription.updated.json", func(env, obj map[string]any) {
+		env["id"], env["type"], env["created"] = "evt_newsub", "customer.subscription.created", 300
+		obj["id"], obj["status"] = "sub_NEW", "active"
+	}))
+	if !slices.Equal(changed, []int64{u.ID}) || plan(t, st, u.ID) != "pro" {
+		t.Fatalf("new subscription not applied: changed=%v plan=%s", changed, plan(t, st, u.ID))
+	}
+	if sub, _ := st.SubscriptionByUser(ctx, u.ID); sub.SubscriptionID != "sub_NEW" {
+		t.Fatalf("stored = %+v", sub)
 	}
 }
