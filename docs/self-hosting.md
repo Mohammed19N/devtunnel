@@ -7,7 +7,7 @@ mode: your own relay with no accounts and no dashboard.
 ## Start a relay
 
 ```sh
-passway-server --self-hosted --domain tunnels.example.com \
+passway-server --domain tunnels.example.com \
   --tls-addr :443 --tls-cert /etc/passway/fullchain.pem --tls-key /etc/passway/privkey.pem \
   --addr :80 --tokens secret1,secret2
 ```
@@ -20,11 +20,11 @@ name the client asks for with `--name`.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--domain` | (required) | Base domain. Tunnels live at `<name>.<domain>`. |
-| `--self-hosted` | `false` | No accounts or dashboard. Without it the server runs in cloud mode and needs `--db` and GitHub OAuth settings. |
+| `--mode` | `$PASSWAY_MODE`, else `self-hosted` | `self-hosted` (no accounts or dashboard) or `cloud` (needs `--db` and GitHub OAuth settings). Self-hosters never need to set it. |
 | `--addr` | `:8080` | Plain HTTP listener. With TLS enabled it redirects to HTTPS. Empty disables it. |
 | `--tls-addr` | (empty) | TLS listener, e.g. `:443`. |
 | `--tls-cert`, `--tls-key` | (empty) | Certificate and key files. Required with `--tls-addr`. |
-| `--tokens` | (empty) | Comma-separated accepted client tokens. Only valid with `--self-hosted`. |
+| `--tokens` | (empty) | Comma-separated accepted client tokens. Only valid in self-hosted mode. |
 | `--db` | (empty) | SQLite database. In self-hosted mode it enables tokens created with `admin token create`. |
 | `--open` | `false` | Allow no tokens on a non-localhost domain. That makes an open relay anyone can use; the server refuses to start otherwise. Not needed when `--tokens` or `--db` is set. |
 | `--public-port` | `0` | Port shown in public URLs, if it differs from the listener (for example behind a proxy). |
@@ -42,7 +42,7 @@ names and common phishing terms) are refused.
 restart, use a database:
 
 ```sh
-passway-server --self-hosted --domain tunnels.example.com --db /var/lib/passway/p.db ...
+passway-server --domain tunnels.example.com --db /var/lib/passway/p.db ...
 passway-server admin --db /var/lib/passway/p.db token create ci
 ```
 
@@ -70,7 +70,7 @@ Description=Passway relay
 After=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/passway-server --self-hosted --domain tunnels.example.com \
+ExecStart=/usr/local/bin/passway-server --domain tunnels.example.com \
   --tls-addr :443 --tls-cert /etc/passway/fullchain.pem --tls-key /etc/passway/privkey.pem \
   --db /var/lib/passway/p.db
 AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -93,7 +93,7 @@ The official image ships in a later milestone. The command will look like:
 
 ```sh
 docker run -p 80:80 -p 443:443 -v passway:/data ghcr.io/mohammed19n/passway-server \
-  --self-hosted --domain tunnels.example.com --db /data/p.db ...
+  --domain tunnels.example.com --db /data/p.db ...
 ```
 
 ## Admin commands

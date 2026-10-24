@@ -69,15 +69,22 @@ type cloudOpts struct {
 
 func cloudFlags(fs *flag.FlagSet) cloudOpts {
 	return cloudOpts{
-		db:               fs.String("db", "", "SQLite database path (required in cloud mode; in --self-hosted mode it enables admin tokens)"),
+		db:               fs.String("db", "", "SQLite database path (required in cloud mode; in self-hosted mode it enables admin tokens)"),
 		ghID:             fs.String("github-client-id", "", "GitHub OAuth app client ID (cloud mode)"),
 		ghSecret:         fs.String("github-client-secret", "", "GitHub OAuth app client secret (cloud mode; default $PASSWAY_GITHUB_CLIENT_SECRET, the flag wins when set)"),
 		baseURL:          fs.String("base-url", "", "public dashboard URL (default <scheme>://<domain>[:port])"),
-		minGitHubAge:     fs.Duration("min-github-age", 168*time.Hour, "minimum GitHub account age to sign up (0 disables)"),
+		minGitHubAge:     fs.Duration("min-github-age", 48*time.Hour, "minimum GitHub account age to sign up (0 disables)"),
 		freeSignupCap:    fs.Int("free-signup-cap", 1000, "max Free accounts; further signups are waitlisted"),
 		freeBandwidthCap: fs.Int64("free-bandwidth-cap", 500<<30, "monthly bandwidth in bytes across all Free accounts"),
 		devLogin:         fs.Bool("dev-login", false, "enable the passwordless /auth/dev login (localhost domains only)"),
 	}
+}
+
+func envOr(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }
 
 // run starts the server and blocks until ctx is cancelled or a listener fails.
@@ -97,7 +104,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	maxConns := fs.Int("max-conns-per-tunnel", 64, "max concurrent proxied connections per tunnel")
 	browserWarning := fs.Bool("browser-warning", false, "show a one-time warning page to browser visitors of tunnels")
 	rateLimit := fs.Int("rate-limit", 0, "max requests per minute per tunnel (0 = unlimited)")
-	selfHosted := fs.Bool("self-hosted", false, "run your own relay: no accounts or dashboard (default is cloud mode)")
+	mode := fs.String("mode", envOr("PASSWAY_MODE", "self-hosted"), "cloud or self-hosted (default $PASSWAY_MODE, else self-hosted)")
 	cf := cloudFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -118,13 +125,16 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	if secret == "" {
 		secret = os.Getenv("PASSWAY_GITHUB_CLIENT_SECRET")
 	}
-	cloud := !*selfHosted
+	if *mode != "cloud" && *mode != "self-hosted" {
+		return usageError{fmt.Errorf("--mode must be cloud or self-hosted, got %q", *mode)}
+	}
+	cloud := *mode == "cloud"
 	if cloud {
 		if *tokens != "" {
-			return usageError{errors.New("--tokens only applies with --self-hosted")}
+			return usageError{errors.New("--tokens only applies with --mode self-hosted")}
 		}
 		if *cf.db == "" || (!*cf.devLogin && (*cf.ghID == "" || secret == "")) {
-			return usageError{errors.New("cloud mode needs --db, --github-client-id and --github-client-secret (or run your own relay with --self-hosted)")}
+			return usageError{errors.New("cloud mode needs --db, --github-client-id and --github-client-secret (or use --mode self-hosted)")}
 		}
 		if *cf.devLogin && *domain != "localhost" && !strings.HasSuffix(*domain, ".localhost") {
 			return usageError{errors.New("--dev-login is only allowed on a localhost domain")}

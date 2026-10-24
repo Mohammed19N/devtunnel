@@ -33,7 +33,7 @@ type Config struct {
 	// https://github.com/login/oauth/access_token, https://api.github.com
 	GitHubAuthURL, GitHubTokenURL, GitHubAPIURL string
 
-	MinGitHubAge  time.Duration // 0 disables; the CLI default is 7*24h
+	MinGitHubAge  time.Duration // 0 disables; the CLI default is 48h
 	FreeSignupCap int           // 0 = 1000
 	DevLogin      bool          // allow /auth/dev?login=X (only when BaseURL host is localhost or *.localhost)
 

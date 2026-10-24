@@ -30,7 +30,7 @@ cd devtunnel
 In one terminal, start the relay server:
 
 ```sh
-go run ./cmd/passway-server --self-hosted --domain localhost
+go run ./cmd/passway-server --domain localhost
 ```
 
 To try the cloud flow locally (accounts, dashboard, plans) instead:
@@ -130,10 +130,11 @@ its tunnel hosts show a 403 page.
 Like any relay it needs wildcard DNS and a wildcard TLS certificate for the
 base domain; see [docs/self-hosting.md](docs/self-hosting.md).
 
-`passway-server` runs in cloud mode by default: accounts, a dashboard on the
+`passway-server --mode cloud` (or `PASSWAY_MODE=cloud`) runs the cloud: accounts, a dashboard on the
 base domain and plan limits, all backed by SQLite.
 
 ```sh
+export PASSWAY_MODE=cloud
 export PASSWAY_GITHUB_CLIENT_SECRET=...
 passway-server --domain passway.example --db /var/lib/passway/p.db \
   --github-client-id <id> --tls-addr :443 --tls-cert cert.pem --tls-key key.pem
@@ -160,18 +161,18 @@ Owner to-dos before a public launch:
 | `--db` | (required) | SQLite database path. |
 | `--github-client-id`, `--github-client-secret` | (empty) | GitHub OAuth app. The secret may come from `$PASSWAY_GITHUB_CLIENT_SECRET`. |
 | `--base-url` | `<scheme>://<domain>[:port]` | Public dashboard URL. Its host must be `--domain`. |
-| `--min-github-age` | `168h` | Minimum GitHub account age to sign up (`0` disables). |
+| `--min-github-age` | `48h` | Minimum GitHub account age to sign up (`0` disables). |
 | `--free-signup-cap` | `1000` | Free accounts allowed; later signups are waitlisted. A waitlisted user is admitted at their next sign-in once there is room, or by an operator with `passway-server admin --db PATH admit <login>`. |
 | `--free-bandwidth-cap` | `500 GiB` | Monthly bandwidth across all Free accounts, in bytes. |
 | `--dev-login` | `false` | Passwordless dev sign-in (localhost only). |
 
 ## Running your own relay
 
-Pass `--self-hosted` for a relay with no accounts or dashboard: random tunnel
-names and shared `--tokens`.
+Self-hosted is the default mode (`--mode self-hosted`): a relay with no accounts
+or dashboard, random tunnel names and shared `--tokens`.
 
 ```sh
-passway-server --self-hosted --domain tunnels.example.com \
+passway-server --domain tunnels.example.com \
   --tls-addr :443 --tls-cert cert.pem --tls-key key.pem \
   --addr :80 --tokens secret1,secret2
 ```

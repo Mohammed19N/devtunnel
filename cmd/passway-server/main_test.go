@@ -29,14 +29,14 @@ import (
 )
 
 func TestRunMissingDomain(t *testing.T) {
-	err := run(context.Background(), []string{"--self-hosted"}, io.Discard, nil)
+	err := run(context.Background(), []string{"--mode", "self-hosted"}, io.Discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "--domain") {
 		t.Fatalf("err = %v, want mention of --domain", err)
 	}
 }
 
 func TestRunTLSWithoutCert(t *testing.T) {
-	err := run(context.Background(), []string{"--self-hosted", "--domain", "localhost", "--tls-addr", ":0"}, io.Discard, nil)
+	err := run(context.Background(), []string{"--mode", "self-hosted", "--domain", "localhost", "--tls-addr", ":0"}, io.Discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "--tls-cert") {
 		t.Fatalf("err = %v, want mention of --tls-cert", err)
 	}
@@ -46,7 +46,7 @@ func TestRunRejectsNegativeLimits(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // if validation passes, run returns at once instead of serving
 	for _, name := range []string{"--rate-limit", "--max-conns-per-tunnel"} {
-		err := run(ctx, []string{"--self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0", name, "-1"}, io.Discard, nil)
+		err := run(ctx, []string{"--mode", "self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0", name, "-1"}, io.Discard, nil)
 		if err == nil || !strings.Contains(err.Error(), name) || exitCode(err) != 2 {
 			t.Errorf("%s -1: err = %v, exit %d; want usage error mentioning the flag, exit 2", name, err, exitCode(err))
 		}
@@ -94,7 +94,7 @@ func start(t *testing.T, args []string) ([]string, func() error) {
 }
 
 func TestRunServesHealthz(t *testing.T) {
-	addrs, stop := start(t, []string{"--self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0"})
+	addrs, stop := start(t, []string{"--mode", "self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0"})
 	req, _ := http.NewRequest("GET", "http://"+addrs[0]+"/healthz", nil)
 	req.Host = "localhost"
 	resp, err := http.DefaultClient.Do(req)
@@ -147,7 +147,7 @@ func writeSelfSigned(t *testing.T, dir string) (certFile, keyFile string) {
 func TestRunRedirectsToTLS(t *testing.T) {
 	cert, key := writeSelfSigned(t, t.TempDir())
 	addrs, stop := start(t, []string{
-		"--self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0",
+		"--mode", "self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0",
 		"--tls-addr", "127.0.0.1:0", "--tls-cert", cert, "--tls-key", key,
 	})
 	if len(addrs) != 2 {
@@ -171,18 +171,18 @@ func TestRunRedirectsToTLS(t *testing.T) {
 }
 
 func TestRunRefusesOpenRelay(t *testing.T) {
-	err := run(context.Background(), []string{"--self-hosted", "--domain", "example.test", "--addr", "127.0.0.1:0"}, io.Discard, nil)
+	err := run(context.Background(), []string{"--mode", "self-hosted", "--domain", "example.test", "--addr", "127.0.0.1:0"}, io.Discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "--open") {
 		t.Fatalf("err = %v, want refusal mentioning --open", err)
 	}
 }
 
 func TestRunOpenFlagAllowsOpenRelay(t *testing.T) {
-	_, stop := start(t, []string{"--self-hosted", "--domain", "example.test", "--addr", "127.0.0.1:0", "--open"})
+	_, stop := start(t, []string{"--mode", "self-hosted", "--domain", "example.test", "--addr", "127.0.0.1:0", "--open"})
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
-	_, stop = start(t, []string{"--self-hosted", "--domain", "example.test", "--addr", "127.0.0.1:0", "--tokens", "secret"})
+	_, stop = start(t, []string{"--mode", "self-hosted", "--domain", "example.test", "--addr", "127.0.0.1:0", "--tokens", "secret"})
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -209,13 +209,13 @@ func TestPublicPort(t *testing.T) {
 func TestCloudModeRequiresFlags(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "p.db")
 	for _, args := range [][]string{
-		{"--domain", "example.test"},
-		{"--domain", "example.test", "--db", db},
-		{"--domain", "example.test", "--db", db, "--github-client-id", "id"},
-		{"--domain", "example.test", "--github-client-id", "id", "--github-client-secret", "s"},
+		{"--mode", "cloud", "--domain", "example.test"},
+		{"--mode", "cloud", "--domain", "example.test", "--db", db},
+		{"--mode", "cloud", "--domain", "example.test", "--db", db, "--github-client-id", "id"},
+		{"--mode", "cloud", "--domain", "example.test", "--github-client-id", "id", "--github-client-secret", "s"},
 	} {
 		err := run(context.Background(), append(args, "--addr", "127.0.0.1:0"), io.Discard, nil)
-		want := "cloud mode needs --db, --github-client-id and --github-client-secret (or run your own relay with --self-hosted)"
+		want := "cloud mode needs --db, --github-client-id and --github-client-secret (or use --mode self-hosted)"
 		if err == nil || err.Error() != want || exitCode(err) != 2 {
 			t.Errorf("%v: err = %v, exit %d; want usage error %q", args, err, exitCode(err), want)
 		}
@@ -228,12 +228,12 @@ func TestBaseURLMustBeDomain(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // if validation passes, run returns at once instead of serving
 	for _, base := range []string{"http://dash.localhost:8080", "http://example.test"} {
-		err := run(ctx, []string{"--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login", "--base-url", base}, io.Discard, nil)
+		err := run(ctx, []string{"--mode", "cloud", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login", "--base-url", base}, io.Discard, nil)
 		if err == nil || !strings.Contains(err.Error(), "--base-url") || exitCode(err) != 2 {
 			t.Errorf("--base-url %s: err = %v, exit %d; want usage error mentioning --base-url", base, err, exitCode(err))
 		}
 	}
-	_, stop := start(t, []string{"--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login", "--base-url", "http://LocalHost:9999"})
+	_, stop := start(t, []string{"--mode", "cloud", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login", "--base-url", "http://LocalHost:9999"})
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestBaseURLMustBeDomain(t *testing.T) {
 func TestCloudSecretFromEnv(t *testing.T) {
 	t.Setenv("PASSWAY_GITHUB_CLIENT_SECRET", "s")
 	db := filepath.Join(t.TempDir(), "p.db")
-	_, stop := start(t, []string{"--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--github-client-id", "id"})
+	_, stop := start(t, []string{"--mode", "cloud", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--github-client-id", "id"})
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestCloudSecretFromEnv(t *testing.T) {
 
 func TestCloudTokensFlagRejected(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "p.db")
-	err := run(context.Background(), []string{"--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login", "--tokens", "a"}, io.Discard, nil)
+	err := run(context.Background(), []string{"--mode", "cloud", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login", "--tokens", "a"}, io.Discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "--tokens") || exitCode(err) != 2 {
 		t.Fatalf("err = %v, exit %d; want usage error mentioning --tokens", err, exitCode(err))
 	}
@@ -258,11 +258,11 @@ func TestCloudTokensFlagRejected(t *testing.T) {
 
 func TestDevLoginLocalhostOnly(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "p.db")
-	err := run(context.Background(), []string{"--domain", "example.test", "--addr", "127.0.0.1:0", "--db", db, "--dev-login"}, io.Discard, nil)
+	err := run(context.Background(), []string{"--mode", "cloud", "--domain", "example.test", "--addr", "127.0.0.1:0", "--db", db, "--dev-login"}, io.Discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "localhost") {
 		t.Fatalf("err = %v, want dev login refused off localhost", err)
 	}
-	_, stop := start(t, []string{"--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login"})
+	_, stop := start(t, []string{"--mode", "cloud", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login"})
 	if err := stop(); err != nil {
 		t.Fatal(err)
 	}
@@ -270,20 +270,20 @@ func TestDevLoginLocalhostOnly(t *testing.T) {
 
 func TestCloudHTTPNonLocalhostFails(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "p.db")
-	err := run(context.Background(), []string{"--domain", "example.test", "--addr", "127.0.0.1:0", "--db", db, "--github-client-id", "i", "--github-client-secret", "s"}, io.Discard, nil)
+	err := run(context.Background(), []string{"--mode", "cloud", "--domain", "example.test", "--addr", "127.0.0.1:0", "--db", db, "--github-client-id", "i", "--github-client-secret", "s"}, io.Discard, nil)
 	if err == nil || !strings.Contains(err.Error(), "https") {
 		t.Fatalf("err = %v, want https startup error", err)
 	}
 }
 
-func TestMinGitHubAgeDefault(t *testing.T) {
+func TestMinGitHubAgeDefault48h(t *testing.T) {
 	fs := flag.NewFlagSet("x", flag.ContinueOnError)
 	cf := cloudFlags(fs)
 	if err := fs.Parse(nil); err != nil {
 		t.Fatal(err)
 	}
-	if *cf.minGitHubAge != 168*time.Hour {
-		t.Fatalf("default = %v, want 168h", *cf.minGitHubAge)
+	if *cf.minGitHubAge != 48*time.Hour {
+		t.Fatalf("default = %v, want 48h", *cf.minGitHubAge)
 	}
 }
 
@@ -319,7 +319,7 @@ func TestSelfHostedDBTokens(t *testing.T) {
 	}
 	st.Close()
 
-	addrs, stop := start(t, []string{"--self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db})
+	addrs, stop := start(t, []string{"--mode", "self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db})
 	connect := func(token string) error { return connectOnce(addrs[0], token) }
 	if err := connect(tok); err != nil {
 		t.Errorf("admin token: %v", err)
@@ -338,7 +338,7 @@ func TestSelfHostedDBTokens(t *testing.T) {
 func TestCookieSecretPersisted(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "p.db")
 	read := func() []byte {
-		_, stop := start(t, []string{"--self-hosted", "--open", "--domain", "example.test", "--addr", "127.0.0.1:0", "--db", db})
+		_, stop := start(t, []string{"--mode", "self-hosted", "--open", "--domain", "example.test", "--addr", "127.0.0.1:0", "--db", db})
 		if err := stop(); err != nil {
 			t.Fatal(err)
 		}
@@ -370,7 +370,7 @@ func TestSelfHostedStaticAndDBTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.Close()
-	addrs, stop := start(t, []string{"--self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--tokens", "x"})
+	addrs, stop := start(t, []string{"--mode", "self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--tokens", "x"})
 	for _, tok := range []string{"x", adminTok} {
 		if err := connectOnce(addrs[0], tok); err != nil {
 			t.Errorf("token %.6q: %v", tok, err)
@@ -388,7 +388,7 @@ func TestDashboardConfigMinGitHubAge(t *testing.T) {
 	for _, c := range []struct {
 		args []string
 		want time.Duration
-	}{{nil, 168 * time.Hour}, {[]string{"--min-github-age", "1h"}, time.Hour}} {
+	}{{nil, 48 * time.Hour}, {[]string{"--min-github-age", "1h"}, time.Hour}} {
 		fs := flag.NewFlagSet("x", flag.ContinueOnError)
 		cf := cloudFlags(fs)
 		if err := fs.Parse(c.args); err != nil {
@@ -414,7 +414,7 @@ func TestCloudFinalFlushBeforeStoreClose(t *testing.T) {
 	}
 	st.Close()
 
-	addrs, stop := start(t, []string{"--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login"})
+	addrs, stop := start(t, []string{"--mode", "cloud", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login"})
 	port := addrs[0][strings.LastIndex(addrs[0], ":")+1:]
 	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, strings.Repeat("x", 4096))
@@ -479,5 +479,43 @@ func connectOnce(addr, token string) error {
 		return nil
 	case err := <-errc:
 		return err
+	}
+}
+
+func TestModeDefaultSelfHosted(t *testing.T) {
+	t.Setenv("PASSWAY_MODE", "")
+	addrs, stop := start(t, []string{"--domain", "localhost", "--addr", "127.0.0.1:0"})
+	if len(addrs) == 0 {
+		t.Fatal("no listener")
+	}
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const cloudNeeds = "cloud mode needs --db, --github-client-id and --github-client-secret (or use --mode self-hosted)"
+
+func TestModeFromEnv(t *testing.T) {
+	t.Setenv("PASSWAY_MODE", "cloud")
+	err := run(context.Background(), []string{"--domain", "example.test", "--addr", "127.0.0.1:0"}, io.Discard, nil)
+	if err == nil || err.Error() != cloudNeeds || exitCode(err) != 2 {
+		t.Fatalf("err = %v, exit %d; want usage error %q", err, exitCode(err), cloudNeeds)
+	}
+}
+
+func TestModeFlagBeatsEnv(t *testing.T) {
+	t.Setenv("PASSWAY_MODE", "cloud")
+	_, stop := start(t, []string{"--mode", "self-hosted", "--domain", "localhost", "--addr", "127.0.0.1:0"})
+	if err := stop(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestModeInvalid(t *testing.T) {
+	t.Setenv("PASSWAY_MODE", "")
+	err := run(context.Background(), []string{"--mode", "hybrid", "--domain", "localhost", "--addr", "127.0.0.1:0"}, io.Discard, nil)
+	want := `--mode must be cloud or self-hosted, got "hybrid"`
+	if err == nil || err.Error() != want || exitCode(err) != 2 {
+		t.Fatalf("err = %v, exit %d; want usage error %q", err, exitCode(err), want)
 	}
 }

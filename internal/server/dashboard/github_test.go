@@ -116,7 +116,7 @@ func newTestEnv(t *testing.T, mod func(*Config)) *testEnv {
 		GitHubAuthURL:      gh.srv.URL + "/login/oauth/authorize",
 		GitHubTokenURL:     gh.srv.URL + "/login/oauth/access_token",
 		GitHubAPIURL:       gh.srv.URL,
-		MinGitHubAge:       7 * 24 * time.Hour,
+		MinGitHubAge:       48 * time.Hour,
 		Logger:             slog.New(slog.DiscardHandler),
 	}
 	if mod != nil {
@@ -335,12 +335,12 @@ func TestCallbackGitHubError(t *testing.T) {
 
 func TestCallbackYoungAccount(t *testing.T) {
 	e := newTestEnv(t, nil)
-	e.gh.addUser(42, "alice", 2*24*time.Hour)
+	e.gh.addUser(42, "alice", 24*time.Hour)
 	w := e.signIn(t, "alice")
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("code = %d, want 403", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "GitHub accounts must be at least 7 days old to sign up") {
+	if !strings.Contains(w.Body.String(), "GitHub accounts must be at least 2 days old to sign up") {
 		t.Errorf("body lacks the copy: %s", w.Body)
 	}
 	assertNoSession(t, w)
