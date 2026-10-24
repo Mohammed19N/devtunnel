@@ -6,8 +6,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mohammed19n/passway/internal/server"
 )
 
 // CustomDomain is a user's custom domain. Until VerifiedAt is set it is a
@@ -172,4 +176,51 @@ func scanDomain(r scanner) (CustomDomain, error) {
 	d.VerifiedAt = fromNullTS(verified)
 	d.CreatedAt = fromTS(created)
 	return d, nil
+}
+
+// AllowCert reports whether an on-demand certificate may be issued for host:
+// a verified custom domain whose owner's plan has MaxCustomDomains > 0 and
+// isn't banned. nil allows; the error explains a refusal. The plan rule is
+// Directory.OwnsDomain's (oldest verified domains win within the limit), so a
+// domain that can't carry a tunnel never gets a certificate either.
+func (s *Store) AllowCert(ctx context.Context, host string) error {
+	host = normHost(host)
+	if host == "" {
+		return errors.New("no host name")
+	}
+	var userID int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT user_id FROM custom_domains WHERE host = ? AND verified_at IS NOT NULL`, host).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%s is not a verified custom domain", host)
+	}
+	if err != nil {
+		return err
+	}
+	if banned, err := s.IsBanned(ctx, "host", host); err != nil {
+		return err
+	} else if banned {
+		return fmt.Errorf("%s is banned", host)
+	}
+	u, err := s.UserByID(ctx, userID)
+	if errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("%s has no owner", host)
+	}
+	if err != nil {
+		return err
+	}
+	if banned, err := s.IsUserBanned(ctx, u); err != nil {
+		return err
+	} else if banned {
+		return fmt.Errorf("the owner of %s is banned", host)
+	}
+	acc := server.Account{ID: strconv.FormatInt(u.ID, 10), Login: u.Login, Plan: server.PlanByName(u.Plan)}
+	ok, err := (&Directory{S: s}).OwnsDomain(ctx, acc, host)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%s is not usable on its owner's plan", host)
+	}
+	return nil
 }

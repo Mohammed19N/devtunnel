@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/caddyserver/certmagic"
+
 	"github.com/mohammed19n/passway/internal/proxyproto"
 	"github.com/mohammed19n/passway/internal/server"
 	"github.com/mohammed19n/passway/internal/server/billing"
@@ -102,6 +104,10 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	tlsAddr := fs.String("tls-addr", "", "TLS listen address")
 	tlsCert := fs.String("tls-cert", "", "TLS certificate file (required with --tls-addr)")
 	tlsKey := fs.String("tls-key", "", "TLS key file (required with --tls-addr)")
+	tlsMode := fs.String("tls-mode", "files", "files (--tls-cert/--tls-key) or acme (automatic certificates; needs --acme-email and $PASSWAY_CLOUDFLARE_API_TOKEN)")
+	acmeEmail := fs.String("acme-email", "", "ACME account email (--tls-mode acme)")
+	acmeDirFlag := fs.String("acme-dir", "", "certificate storage directory (--tls-mode acme; default <dir of --db>/certs, else ./certs)")
+	acmeCA := fs.String("acme-ca", certmagic.LetsEncryptProductionCA, "ACME directory URL (--tls-mode acme; for dry runs use "+certmagic.LetsEncryptStagingCA+")")
 	tokens := fs.String("tokens", "", "comma-separated accepted tokens (empty = open relay; needs --open unless domain is localhost)")
 	open := fs.Bool("open", false, "allow running without --tokens on a non-localhost domain (self-hosted only; ignored in cloud mode)")
 	publicPortFlag := fs.Int("public-port", 0, "port shown in public URLs (0 = the listener's port)")
@@ -158,18 +164,38 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		return fmt.Errorf("refusing to run an open relay on %s: set --tokens or pass --open", *domain)
 	}
 	useTLS := *tlsAddr != ""
-	var cert tls.Certificate
-	if useTLS {
+	acme := *tlsMode == "acme"
+	var acmeCfg acmeOpts
+	var tlsCfg *tls.Config
+	switch {
+	case *tlsMode != "files" && !acme:
+		return usageError{fmt.Errorf("--tls-mode must be files or acme, got %q", *tlsMode)}
+	case acme:
+		if !useTLS {
+			return usageError{errors.New("--tls-mode acme needs --tls-addr")}
+		}
+		if *tlsCert != "" || *tlsKey != "" {
+			return usageError{errors.New("--tls-cert and --tls-key only apply with --tls-mode files")}
+		}
+		if *acmeEmail == "" {
+			return usageError{errors.New("--tls-mode acme needs --acme-email")}
+		}
+		acmeCfg = acmeOpts{email: *acmeEmail, dir: acmeDir(*acmeDirFlag, *cf.db), ca: *acmeCA, cloudflareToken: os.Getenv("PASSWAY_CLOUDFLARE_API_TOKEN")}
+		if acmeCfg.cloudflareToken == "" {
+			return usageError{errors.New("--tls-mode acme needs PASSWAY_CLOUDFLARE_API_TOKEN in the environment")}
+		}
+	case useTLS:
 		if *tlsCert == "" {
 			return errors.New("--tls-cert is required with --tls-addr")
 		}
 		if *tlsKey == "" {
 			return errors.New("--tls-key is required with --tls-addr")
 		}
-		var err error
-		if cert, err = tls.LoadX509KeyPair(*tlsCert, *tlsKey); err != nil {
+		cert, err := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if err != nil {
 			return fmt.Errorf("load TLS certificate: %w", err)
 		}
+		tlsCfg = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 	}
 	if !useTLS && *addr == "" {
 		return errors.New("nothing to listen on: set --addr or --tls-addr")
@@ -193,11 +219,12 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 			}
 			return fmt.Errorf("listen on %s: %w", *tlsAddr, err)
 		}
-		var rawLn net.Listener = ln
+		// Raw, then PROXY protocol, then TLS. tlsLn stays raw until the
+		// TLS config exists (in acme mode that needs the store, below).
+		tlsLn = ln
 		if *proxyProto {
-			rawLn = proxyproto.NewListener(ln, 10*time.Second)
+			tlsLn = proxyproto.NewListener(ln, 10*time.Second)
 		}
-		tlsLn = tls.NewListener(rawLn, &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
 		addrs = append(addrs, ln.Addr().String())
 	}
 
@@ -226,6 +253,25 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 			closeListeners(plainLn, tlsLn)
 			return fmt.Errorf("cookie secret: %w", err)
 		}
+	}
+
+	var acmeChallenge http.Handler
+	if acme {
+		// On-demand certificates need the cloud store; self-hosted manages
+		// only <domain> and *.<domain>.
+		var certStore *store.Store
+		if cloud {
+			certStore = st
+		}
+		var err error
+		if tlsCfg, acmeChallenge, err = newCertManager(ctx, *domain, acmeCfg, certStore, log); err != nil {
+			closeListeners(plainLn, tlsLn)
+			return err
+		}
+		log.Info("automatic TLS", "domain", *domain, "dir", acmeCfg.dir, "ca", acmeCfg.ca, "on_demand", certStore != nil)
+	}
+	if useTLS {
+		tlsLn = tls.NewListener(tlsLn, tlsCfg)
 	}
 
 	var authenticator server.Authenticator
@@ -326,7 +372,11 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	if useTLS {
 		serve(srv, tlsLn, "https")
 		if plainLn != nil {
-			serve(redirectHandler(port), plainLn, "http-redirect")
+			var h http.Handler = redirectHandler(port)
+			if acmeChallenge != nil {
+				h = acmeHTTPHandler(acmeChallenge, h)
+			}
+			serve(h, plainLn, "http-redirect")
 		}
 	} else {
 		serve(srv, plainLn, "http")

@@ -23,7 +23,11 @@ name the client asks for with `--name`.
 | `--mode` | `$PASSWAY_MODE`, else `self-hosted` | `self-hosted` (no accounts or dashboard) or `cloud` (needs `--db` and GitHub OAuth settings). Self-hosters never need to set it. |
 | `--addr` | `:8080` | Plain HTTP listener. With TLS enabled it redirects to HTTPS. Empty disables it. |
 | `--tls-addr` | (empty) | TLS listener, e.g. `:443`. |
-| `--tls-cert`, `--tls-key` | (empty) | Certificate and key files. Required with `--tls-addr`. |
+| `--tls-mode` | `files` | `files` reads `--tls-cert`/`--tls-key`. `acme` obtains and renews certificates automatically (see below). |
+| `--tls-cert`, `--tls-key` | (empty) | Certificate and key files. Required with `--tls-addr` in `files` mode. |
+| `--acme-email` | (empty) | ACME account email. Required with `--tls-mode acme`. |
+| `--acme-dir` | `<dir of --db>/certs`, else `./certs` | Where certificates and the ACME account are stored. |
+| `--acme-ca` | Let's Encrypt production | ACME directory URL. |
 | `--tokens` | (empty) | Comma-separated accepted client tokens. Only valid in self-hosted mode. |
 | `--db` | (empty) | SQLite database. In self-hosted mode it enables tokens created with `admin token create`. |
 | `--open` | `false` | Allow no tokens on a non-localhost domain. That makes an open relay anyone can use; the server refuses to start otherwise. Not needed when `--tokens` or `--db` is set. |
@@ -56,6 +60,13 @@ on a fresh install. The token is printed once. Only its hash is stored.
 - Use a wildcard certificate for `*.tunnels.example.com` (and the apex).
   Wildcard certificates need a DNS-01 challenge, for example with certbot or
   lego and your DNS provider's plugin.
+- Or let the server do it: `--tls-mode acme --acme-email you@example.com`
+  with `PASSWAY_CLOUDFLARE_API_TOKEN` set in the environment (a Cloudflare API
+  token with Zone.DNS edit on the domain's zone; there is no flag for it). The
+  server obtains `tunnels.example.com` and `*.tunnels.example.com` over DNS-01
+  and renews them. For a dry run, pass
+  `--acme-ca https://acme-staging-v02.api.letsencrypt.org/directory`
+  (Let's Encrypt staging: untrusted certificates, generous rate limits).
 - Run it on `:443` with `--tls-addr`, or terminate TLS in front of it and pass
   `--public-port` if the public port differs.
 - If you run a public relay, put your domain on the

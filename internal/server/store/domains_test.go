@@ -209,3 +209,125 @@ func TestDowngradeDisablesDomain(t *testing.T) {
 		t.Fatal("non-database account owns a domain")
 	}
 }
+
+// certDomain gives a fresh user (plan) a verified custom domain host.
+func certDomain(t *testing.T, s *Store, ghID int64, login, plan, host string) User {
+	t.Helper()
+	ctx := context.Background()
+	u := mkUser(t, s, ghID, login)
+	if err := s.SetPlan(ctx, u.ID, "pro"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddDomain(ctx, u.ID, host, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyDomain(ctx, u.ID, host); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPlan(ctx, u.ID, plan); err != nil {
+		t.Fatal(err)
+	}
+	return u
+}
+
+func TestAllowCertVerifiedPro(t *testing.T) {
+	s := openTest(t)
+	certDomain(t, s, 1, "alice", "pro", "hooks.example.com")
+	if err := s.AllowCert(context.Background(), "Hooks.Example.com."); err != nil {
+		t.Fatalf("AllowCert = %v, want nil", err)
+	}
+}
+
+func TestAllowCertUnverified(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	u := mkUser(t, s, 1, "alice")
+	if err := s.SetPlan(ctx, u.ID, "pro"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddDomain(ctx, u.ID, "hooks.example.com", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AllowCert(ctx, "hooks.example.com"); err == nil {
+		t.Fatal("AllowCert allowed an unverified domain")
+	}
+}
+
+func TestAllowCertFreeOwner(t *testing.T) {
+	s := openTest(t)
+	certDomain(t, s, 1, "alice", "free", "hooks.example.com")
+	if err := s.AllowCert(context.Background(), "hooks.example.com"); err == nil {
+		t.Fatal("AllowCert allowed a Free owner's domain")
+	}
+}
+
+func TestAllowCertOverPlanLimit(t *testing.T) {
+	// Pro allows 2 custom domains; after a downgrade-and-back the oldest win.
+	s := openTest(t)
+	ctx := context.Background()
+	u := certDomain(t, s, 1, "alice", "pro", "a.example.com")
+	if _, err := s.AddDomain(ctx, u.ID, "b.example.com", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyDomain(ctx, u.ID, "b.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	// Insert a third verified row directly, as if the limit had been higher.
+	if _, err := s.AddDomain(ctx, u.ID, "c.example.com", 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.VerifyDomain(ctx, u.ID, "c.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"a.example.com", "b.example.com"} {
+		if err := s.AllowCert(ctx, h); err != nil {
+			t.Errorf("AllowCert(%s) = %v, want nil", h, err)
+		}
+	}
+	if err := s.AllowCert(ctx, "c.example.com"); err == nil {
+		t.Error("AllowCert allowed a domain beyond the plan limit")
+	}
+}
+
+func TestAllowCertUnknownHost(t *testing.T) {
+	s := openTest(t)
+	certDomain(t, s, 1, "alice", "pro", "hooks.example.com")
+	for _, h := range []string{"random.example.org", "", "example.com"} {
+		if err := s.AllowCert(context.Background(), h); err == nil {
+			t.Errorf("AllowCert(%q) = nil, want refusal", h)
+		}
+	}
+}
+
+func TestAllowCertBannedOwner(t *testing.T) {
+	s := openTest(t)
+	u := certDomain(t, s, 1, "alice", "pro", "hooks.example.com")
+	if err := s.BanUser(context.Background(), u, "abuse"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AllowCert(context.Background(), "hooks.example.com"); err == nil {
+		t.Fatal("AllowCert allowed a banned owner's domain")
+	}
+}
+
+func TestAllowCertLegacyLoginBan(t *testing.T) {
+	s := openTest(t)
+	certDomain(t, s, 1, "alice", "pro", "hooks.example.com")
+	if err := s.AddBan(context.Background(), Ban{Kind: "user", Value: "Alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AllowCert(context.Background(), "hooks.example.com"); err == nil {
+		t.Fatal("AllowCert allowed a login-banned owner's domain")
+	}
+}
+
+func TestAllowCertBannedHost(t *testing.T) {
+	s := openTest(t)
+	certDomain(t, s, 1, "alice", "pro", "hooks.example.com")
+	if err := s.AddBan(context.Background(), Ban{Kind: "host", Value: "Hooks.Example.com."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AllowCert(context.Background(), "hooks.example.com"); err == nil {
+		t.Fatal("AllowCert allowed a host-banned domain")
+	}
+}
