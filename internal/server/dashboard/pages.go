@@ -144,6 +144,17 @@ func (d *Dashboard) handleDashboard(w http.ResponseWriter, r *http.Request, s *s
 	if plan.Bandwidth > 0 {
 		v.Plan.Limit = formatBytes(plan.Bandwidth)
 	}
+	if d.cfg.Billing != nil {
+		v.Billing = true
+		v.ProLabel = d.cfg.ProPrice.Label()
+		v.Upgraded = r.URL.Query().Get("upgraded") == "1"
+		if _, err := d.cfg.Store.SubscriptionByUser(r.Context(), s.User.ID); err == nil {
+			v.HasCustomer = true
+		} else if !errors.Is(err, store.ErrNotFound) {
+			d.internalError(w, "subscription", err)
+			return
+		}
+	}
 	if v.Subdomains, err = d.subdomainRows(r, s, v.Host); err != nil {
 		d.internalError(w, "subdomains", err)
 		return

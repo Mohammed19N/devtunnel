@@ -71,7 +71,9 @@ func userID(acc server.Account) (int64, bool) {
 	return id, err == nil
 }
 
-// Names returns acc's subdomains, default first.
+// Names returns the subdomains acc may use under its plan: default first, then
+// oldest, at most Plan.MaxSubdomains (0 = all). After a downgrade the extras
+// stay reserved to the owner but are not usable until the plan allows them.
 func (d *Directory) Names(ctx context.Context, acc server.Account) ([]string, error) {
 	id, ok := userID(acc)
 	if !ok {
@@ -81,6 +83,9 @@ func (d *Directory) Names(ctx context.Context, acc server.Account) ([]string, er
 	if err != nil {
 		return nil, err
 	}
+	if max := acc.Plan.MaxSubdomains; max > 0 && len(subs) > max {
+		subs = subs[:max]
+	}
 	names := make([]string, len(subs))
 	for i, s := range subs {
 		names[i] = s.Name
@@ -88,17 +93,19 @@ func (d *Directory) Names(ctx context.Context, acc server.Account) ([]string, er
 	return names, nil
 }
 
-// Owns reports whether acc owns name.
+// Owns reports whether name is one of acc's usable subdomains (see Names).
 func (d *Directory) Owns(ctx context.Context, acc server.Account, name string) (bool, error) {
-	id, ok := userID(acc)
-	if !ok {
-		return false, nil
+	names, err := d.Names(ctx, acc)
+	if err != nil {
+		return false, err
 	}
-	owner, err := d.S.SubdomainOwner(ctx, name)
-	if errors.Is(err, ErrNotFound) {
-		return false, nil
+	name = strings.ToLower(name)
+	for _, n := range names {
+		if n == name {
+			return true, nil
+		}
 	}
-	return err == nil && owner == id, err
+	return false, nil
 }
 
 // Banned reports whether acc (by id, or a legacy login ban) or the host label is banned.

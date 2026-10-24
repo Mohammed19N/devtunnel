@@ -296,3 +296,42 @@ func TestDirectoryRevokedTokens(t *testing.T) {
 		t.Fatalf("RevokedTokens(nil) = %v, %v", got, err)
 	}
 }
+
+func TestDowngradeBoundsNames(t *testing.T) {
+	ctx := context.Background()
+	s := openTest(t)
+	d := &Directory{S: s}
+	u := mkUser(t, s, 1, "alice")
+	if err := s.SetPlan(ctx, u.ID, "pro"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		def  bool
+	}{{"acme", false}, {"main", true}, {"beta", false}} {
+		if err := s.ClaimSubdomain(ctx, u.ID, c.name, c.def, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	acc := func(plan string) server.Account {
+		return server.Account{ID: "1", Login: "alice", Plan: server.PlanByName(plan)}
+	}
+	check := func(plan string, want []string, owns map[string]bool) {
+		t.Helper()
+		names, err := d.Names(ctx, acc(plan))
+		if err != nil || !reflect.DeepEqual(names, want) {
+			t.Fatalf("%s: names = %v, %v; want %v", plan, names, err, want)
+		}
+		for n, w := range owns {
+			if ok, err := d.Owns(ctx, acc(plan), n); err != nil || ok != w {
+				t.Fatalf("%s: Owns(%s) = %v, %v; want %v", plan, n, ok, err, w)
+			}
+		}
+	}
+	check("pro", []string{"main", "acme", "beta"}, map[string]bool{"acme": true, "beta": true})
+	check("free", []string{"main"}, map[string]bool{"main": true, "acme": false, "beta": false})
+	if o, _ := s.SubdomainOwner(ctx, "acme"); o != u.ID {
+		t.Fatalf("acme released on downgrade: owner %d", o)
+	}
+	check("pro", []string{"main", "acme", "beta"}, map[string]bool{"acme": true, "beta": true})
+}

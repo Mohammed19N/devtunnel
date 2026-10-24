@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mohammed19n/passway/internal/server/billing"
 	"github.com/mohammed19n/passway/internal/server/store"
 )
 
@@ -36,6 +37,15 @@ type Config struct {
 	MinGitHubAge  time.Duration // 0 disables; the CLI default is 48h
 	FreeSignupCap int           // 0 = 1000
 	DevLogin      bool          // allow the /auth/dev login form (only when BaseURL host is localhost or *.localhost)
+
+	// Billing is the Stripe client; nil = billing off. With it set, ProPrice
+	// (read from Stripe at startup), PriceID and WebhookSecret are required.
+	Billing       *billing.Client
+	ProPrice      billing.Price
+	PriceID       string
+	WebhookSecret string
+	// PlanChanged is called for each user whose plan a webhook changed. nil = no-op.
+	PlanChanged func(userID int64)
 
 	Tunnels func(accountID string) []TunnelInfo // live tunnels for the dashboard
 	// Disconnect closes the live tunnels of accountID that use tokenID; it is
@@ -73,7 +83,7 @@ var appCSS []byte
 
 var tmpl = template.Must(template.ParseFS(templateFS, "templates/*.html"))
 
-const csp = "default-src 'none'; style-src 'self'; img-src 'self' https://avatars.githubusercontent.com; form-action 'self' https://github.com; frame-ancestors 'none'; base-uri 'none'"
+const csp = "default-src 'none'; style-src 'self'; img-src 'self' https://avatars.githubusercontent.com; form-action 'self' https://github.com https://checkout.stripe.com https://billing.stripe.com; frame-ancestors 'none'; base-uri 'none'"
 
 // New validates cfg, applies defaults and returns a Dashboard.
 func New(cfg Config) (*Dashboard, error) {
@@ -123,6 +133,12 @@ func New(cfg Config) (*Dashboard, error) {
 	if cfg.Disconnect == nil {
 		cfg.Disconnect = func(string, int64) {}
 	}
+	if cfg.Billing != nil && (cfg.PriceID == "" || cfg.WebhookSecret == "") {
+		return nil, errors.New("dashboard: billing needs PriceID and WebhookSecret")
+	}
+	if cfg.PlanChanged == nil {
+		cfg.PlanChanged = func(int64) {}
+	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
@@ -165,6 +181,12 @@ func (d *Dashboard) routes() {
 	m.HandleFunc("GET /dashboard/tokens", d.page(d.active(d.handleTokens)))
 	d.handlePost("/dashboard/tokens", d.active(d.handleCreateToken))
 	d.handlePost("/dashboard/tokens/revoke", d.active(d.handleRevokeToken))
+	if d.cfg.Billing != nil {
+		d.handlePost("/billing/checkout", d.active(d.handleCheckout))
+		d.handlePost("/billing/portal", d.active(d.handlePortal))
+		// Stripe calls this: no session, CSRF or origin checks; the signature is the auth.
+		m.HandleFunc("POST /stripe/webhook", d.handleStripeWebhook)
+	}
 	m.HandleFunc("GET /waitlist", d.page(d.handleWaitlist))
 	m.HandleFunc("GET /static/app.css", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
@@ -189,7 +211,7 @@ func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Content-Security-Policy", csp)
-	if r.Method == http.MethodPost {
+	if r.Method == http.MethodPost && r.URL.Path != "/stripe/webhook" {
 		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	}
 	d.mux.ServeHTTP(w, r)
@@ -204,18 +226,22 @@ type view struct {
 	Wide    bool        // account pages use the wide layout
 
 	// Account pages.
-	Error      string // inline form error
-	BaseURL    string
-	Host       string // BaseURL's host[:port]
-	Tunnels    []tunnelRow
-	Plan       planView
-	Subdomains []subdomainRow
-	ClaimFull  bool // the plan's reserved subdomains are all used: no claim form
-	ClaimMax   int
-	Upgrade    bool // on Free, so ClaimFull suggests upgrading
-	Tokens     []tokenRow
-	NewToken   string // plaintext of a token created by this very request
-	NewName    string
+	Error       string // inline form error
+	BaseURL     string
+	Host        string // BaseURL's host[:port]
+	Tunnels     []tunnelRow
+	Plan        planView
+	Subdomains  []subdomainRow
+	ClaimFull   bool // the plan's reserved subdomains are all used: no claim form
+	ClaimMax    int
+	Upgrade     bool   // on Free, so ClaimFull suggests upgrading
+	Billing     bool   // billing is on: show Upgrade / Manage billing
+	ProLabel    string // e.g. "$7 / month"
+	HasCustomer bool   // the user has a Stripe customer: show Manage billing
+	Upgraded    bool   // ?upgraded=1 after checkout
+	Tokens      []tokenRow
+	NewToken    string // plaintext of a token created by this very request
+	NewName     string
 }
 
 // render executes the named template into a buffer and writes it with status.

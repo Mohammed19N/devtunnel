@@ -149,6 +149,17 @@ func (s *Server) CloseTokenTunnels(accountID string, tokenID int64) {
 	}
 }
 
+// CloseAccountTunnels closes all live tunnels of accountID, e.g. after its
+// plan changed, so they reconnect under the new limits.
+func (s *Server) CloseAccountTunnels(accountID string) {
+	for _, t := range s.registry.ByAccount(accountID) {
+		if t.session != nil {
+			s.log.Info("closing tunnel after plan change", "name", t.Name, "account", accountID)
+			t.session.Close()
+		}
+	}
+}
+
 // CloseTunnels closes every active tunnel session. The server keeps accepting new tunnels.
 func (s *Server) CloseTunnels() {
 	for _, t := range s.registry.All() {

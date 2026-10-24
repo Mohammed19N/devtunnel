@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/mohammed19n/passway/internal/server"
+	"github.com/mohammed19n/passway/internal/server/billing"
 	"github.com/mohammed19n/passway/internal/server/dashboard"
 	"github.com/mohammed19n/passway/internal/server/store"
 )
@@ -65,6 +66,7 @@ type cloudOpts struct {
 	freeSignupCap               *int
 	freeBandwidthCap            *int64
 	devLogin                    *bool
+	stripePricePro              *string
 }
 
 func cloudFlags(fs *flag.FlagSet) cloudOpts {
@@ -76,6 +78,7 @@ func cloudFlags(fs *flag.FlagSet) cloudOpts {
 		minGitHubAge:     fs.Duration("min-github-age", 48*time.Hour, "minimum GitHub account age to sign up (0 disables)"),
 		freeSignupCap:    fs.Int("free-signup-cap", 1000, "max Free accounts; further signups are waitlisted"),
 		freeBandwidthCap: fs.Int64("free-bandwidth-cap", 500<<30, "monthly bandwidth in bytes across all Free accounts"),
+		stripePricePro:   fs.String("stripe-price-pro", "", "Stripe price ID of the Pro plan (cloud mode; billing also needs $PASSWAY_STRIPE_SECRET_KEY and $PASSWAY_STRIPE_WEBHOOK_SECRET)"),
 		devLogin:         fs.Bool("dev-login", false, "enable the passwordless /auth/dev login (localhost domains only)"),
 	}
 }
@@ -139,6 +142,9 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		}
 		if *cf.devLogin && *domain != "localhost" && !strings.HasSuffix(*domain, ".localhost") {
 			return usageError{errors.New("--dev-login is only allowed on a localhost domain")}
+		}
+		if missing := billingMissing(*cf.stripePricePro); len(missing) > 0 && len(missing) < 3 {
+			return usageError{fmt.Errorf("billing needs all of --stripe-price-pro, PASSWAY_STRIPE_SECRET_KEY and PASSWAY_STRIPE_WEBHOOK_SECRET; missing %s", strings.Join(missing, ", "))}
 		}
 		// The dashboard is only routed on Host == --domain.
 		if *cf.baseURL != "" {
@@ -257,6 +263,20 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		}
 		dcfg := cf.dashboardConfig(st, base, secret)
 		dcfg.Logger = log
+		if *cf.stripePricePro != "" && len(billingMissing(*cf.stripePricePro)) == 0 {
+			bc := &billing.Client{Key: os.Getenv("PASSWAY_STRIPE_SECRET_KEY")}
+			pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
+			price, err := bc.Price(pctx, *cf.stripePricePro)
+			pcancel()
+			if err != nil {
+				closeListeners(plainLn, tlsLn)
+				return fmt.Errorf("stripe: fetch price %s: %w", *cf.stripePricePro, err)
+			}
+			dcfg.Billing, dcfg.ProPrice, dcfg.PriceID = bc, price, *cf.stripePricePro
+			dcfg.WebhookSecret = os.Getenv("PASSWAY_STRIPE_WEBHOOK_SECRET")
+			log.Info("billing enabled", "price", price.Label())
+		}
+		dcfg.PlanChanged = func(id int64) { srv.CloseAccountTunnels(strconv.FormatInt(id, 10)) }
 		dcfg.Tunnels = func(id string) []dashboard.TunnelInfo {
 			var out []dashboard.TunnelInfo
 			for _, t := range srv.TunnelsFor(id) {
@@ -323,6 +343,22 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		}
 	}
 	return runErr
+}
+
+// billingMissing lists the billing inputs that are unset. Billing is on only
+// when none is missing; all three missing means billing is off.
+func billingMissing(pricePro string) []string {
+	var m []string
+	if pricePro == "" {
+		m = append(m, "--stripe-price-pro")
+	}
+	if os.Getenv("PASSWAY_STRIPE_SECRET_KEY") == "" {
+		m = append(m, "PASSWAY_STRIPE_SECRET_KEY")
+	}
+	if os.Getenv("PASSWAY_STRIPE_WEBHOOK_SECRET") == "" {
+		m = append(m, "PASSWAY_STRIPE_WEBHOOK_SECRET")
+	}
+	return m
 }
 
 func closeListeners(lns ...net.Listener) {

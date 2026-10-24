@@ -153,7 +153,7 @@ func TestSecurityHeaders(t *testing.T) {
 		"Cache-Control":           "no-store",
 		"X-Frame-Options":         "DENY",
 		"X-Content-Type-Options":  "nosniff",
-		"Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self' https://avatars.githubusercontent.com; form-action 'self' https://github.com; frame-ancestors 'none'; base-uri 'none'",
+		"Content-Security-Policy": "default-src 'none'; style-src 'self'; img-src 'self' https://avatars.githubusercontent.com; form-action 'self' https://github.com https://checkout.stripe.com https://billing.stripe.com; frame-ancestors 'none'; base-uri 'none'",
 	}
 	for _, rq := range []struct{ method, path string }{
 		{"GET", "/"}, {"GET", "/login"}, {"GET", "/dashboard"}, {"GET", "/waitlist"},

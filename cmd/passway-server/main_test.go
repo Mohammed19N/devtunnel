@@ -519,3 +519,20 @@ func TestModeInvalid(t *testing.T) {
 		t.Fatalf("err = %v, exit %d; want usage error %q", err, exitCode(err), want)
 	}
 }
+
+func TestBillingFlagsPartial(t *testing.T) {
+	t.Setenv("PASSWAY_STRIPE_SECRET_KEY", "")
+	t.Setenv("PASSWAY_STRIPE_WEBHOOK_SECRET", "")
+	db := filepath.Join(t.TempDir(), "p.db")
+	err := run(context.Background(), []string{"--mode", "cloud", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login", "--stripe-price-pro", "price_1"}, io.Discard, nil)
+	if err == nil || exitCode(err) != 2 ||
+		!strings.Contains(err.Error(), "PASSWAY_STRIPE_SECRET_KEY") || !strings.Contains(err.Error(), "PASSWAY_STRIPE_WEBHOOK_SECRET") {
+		t.Fatalf("err = %v, exit %d; want usage error naming both env vars", err, exitCode(err))
+	}
+	// Only the key set: names the other two inputs.
+	t.Setenv("PASSWAY_STRIPE_SECRET_KEY", "sk_test_x")
+	err = run(context.Background(), []string{"--mode", "cloud", "--domain", "localhost", "--addr", "127.0.0.1:0", "--db", db, "--dev-login"}, io.Discard, nil)
+	if err == nil || exitCode(err) != 2 || !strings.Contains(err.Error(), "--stripe-price-pro") || !strings.Contains(err.Error(), "PASSWAY_STRIPE_WEBHOOK_SECRET") {
+		t.Fatalf("key only: err = %v, exit %d", err, exitCode(err))
+	}
+}

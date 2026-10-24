@@ -21,7 +21,10 @@ passway login &lt;token&gt;</code></pre>
 <p><strong>{{.Plan.Name}}</strong>: {{.Plan.Tunnels}} concurrent tunnel(s), {{.Plan.Subdomains}} reserved subdomain(s), {{.Plan.Rate}} requests per minute.</p>
 <p>Bandwidth this month: <strong>{{.Plan.Used}} of {{.Plan.Limit}}</strong></p>
 {{if .Plan.LimitBytes}}<progress value="{{.Plan.UsedBytes}}" max="{{.Plan.LimitBytes}}">{{.Plan.Used}} of {{.Plan.Limit}}</progress>{{end}}
-{{if .Plan.Upgrade}}<p><button type="button" class="btn" disabled>Upgrade to Pro</button> <span class="note">Coming soon</span></p>{{end}}
+{{if .Upgraded}}<p class="note">Payment received — your plan updates in a few seconds.</p>{{end}}
+{{if .Billing}}{{if .Plan.Upgrade}}<form method="post" action="/billing/checkout"><input type="hidden" name="csrf" value="{{.CSRF}}"><p><button type="submit" class="btn">Upgrade to Pro — {{.ProLabel}}</button></p></form>{{end}}
+{{if .HasCustomer}}<form method="post" action="/billing/portal"><input type="hidden" name="csrf" value="{{.CSRF}}"><p><button type="submit" class="btn">Manage billing</button></p></form>{{end}}
+{{else}}{{if .Plan.Upgrade}}<p><button type="button" class="btn" disabled>Upgrade to Pro</button> <span class="note">Coming soon</span></p>{{end}}{{end}}
 </section>
 
 <section>
