@@ -45,7 +45,8 @@ func (s *Store) UpsertGitHubUser(ctx context.Context, u User) (User, bool, error
 // SignupGitHubUser upserts u like UpsertGitHubUser. When it creates the user,
 // in the same IMMEDIATE transaction, it waitlists them if admitted Free users
 // are already at freeCap, so concurrent signups never exceed freeCap. An
-// existing user keeps their state.
+// existing waitlisted user is admitted (in the same transaction) only while
+// admitted Free users are below freeCap; otherwise they keep their state.
 func (s *Store) SignupGitHubUser(ctx context.Context, u User, freeCap int) (User, bool, error) {
 	return s.upsertGitHubUser(ctx, u, freeCap)
 }
@@ -92,6 +93,24 @@ func (s *Store) upsertGitHubUser(ctx context.Context, u User, freeCap int) (User
 				`UPDATE users SET login = ?, name = ?, avatar_url = ? WHERE id = ?`,
 				u.Login, u.Name, u.AvatarURL, id); err != nil {
 				return err
+			}
+			if freeCap >= 0 {
+				// Re-admit a waitlisted user only while there is room, in this
+				// same transaction as the count.
+				res, err := tx.ExecContext(ctx,
+					`UPDATE users SET waitlisted = 0 WHERE id = ? AND waitlisted = 1
+					 AND (SELECT count(*) FROM users WHERE plan = 'free' AND waitlisted = 0) < ?`,
+					id, freeCap)
+				if err != nil {
+					return err
+				}
+				if n, _ := res.RowsAffected(); n > 0 {
+					if _, err := tx.ExecContext(ctx,
+						`INSERT INTO audit_log (user_id, action, detail, created_at) VALUES (?, 'waitlist.admit', 'via=sign-in', ?)`,
+						id, ts(time.Now())); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		out, err = scanUser(tx.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id = ?`, id))

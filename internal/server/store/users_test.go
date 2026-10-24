@@ -162,3 +162,28 @@ func TestOpenExisting(t *testing.T) {
 	}
 	st.Close()
 }
+
+func TestSignupReadmitCapConcurrent(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	const cap, n = 5, 20
+	for i := 0; i < n; i++ {
+		if _, _, err := s.UpsertGitHubUser(ctx, User{GitHubID: int64(1000 + i), Login: fmt.Sprintf("u%d", i), Waitlisted: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := s.SignupGitHubUser(ctx, User{GitHubID: int64(1000 + i), Login: fmt.Sprintf("u%d", i)}, cap); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got, _ := s.CountUsers(ctx, "free"); got != cap {
+		t.Errorf("admitted = %d, want %d", got, cap)
+	}
+}
