@@ -125,16 +125,24 @@ systemd unit, not both.
 
 ## 3. Back up the nginx config
 
+Take the backup first, before anything under `/etc/nginx` changes. Every
+later step compares against it, and restores from it.
+
 ```sh
 sudo cp -a /etc/nginx /etc/nginx.bak-$(date +%F)
 ```
 
 ## 4. Prepare the change and show it to the owner
 
-Work on a copy, so nothing live changes until it is approved:
+Draft the edits in a staging copy, only to produce the diff. Don't run
+`nginx -t` against the staging copy. Its includes are absolute paths
+(`/etc/nginx/passway/...`, and on Debian `/etc/nginx/sites-enabled/*`), so
+the test would fail on missing files, or quietly check the live files instead.
+The real test happens in place in §5.
 
 ```sh
-sudo cp -a /etc/nginx /tmp/nginx.new
+sudo rm -rf /tmp/nginx.new                         # no stale staging copy
+sudo cp -a /etc/nginx.bak-$(date +%F) /tmp/nginx.new
 sudo install -d /tmp/nginx.new/passway
 sudo install -m 0644 deploy/nginx/passway-stream.conf deploy/nginx/passway-http.conf /tmp/nginx.new/passway/
 ```
@@ -165,32 +173,63 @@ In `/tmp/nginx.new`:
    - `listen 443 ssl;` / `listen [::]:443 ssl;` become `listen 127.0.0.1:8443 ssl proxy_protocol;`.
    - Add `set_real_ip_from 127.0.0.1;` and `real_ip_header proxy_protocol;`.
 
-   Search for every :443 listener, including `default_server` and
-   catch-all blocks:
+   Find every :443 listener in every form: `443`, `[::]:443`,
+   `1.2.3.4:443`, `*:443`, with or without `ssl`, `default_server` and other
+   parameters.
 
    ```sh
-   sudo grep -rnE 'listen\s+(\[::\]:)?443' /tmp/nginx.new
+   sudo grep -rnE 'listen[^;]*\b443\b' /tmp/nginx.new
    ```
 
-   After the edit, nothing in the http block may listen on 443. The stream
-   block owns it, and nginx refuses to start if both try.
+   Read every match by eye. The pattern also matches a `listen` whose port is
+   something else but has `443` as a separate word elsewhere on the line.
+   A listener split over several lines, or hidden behind an unusual
+   `include`, won't match at all, so also skim `sudo nginx -T` from step 1.
 
-5. **Show the owner the full diff and wait for an explicit yes:**
+   Before the edit, each app's :443 listener should match. After it, the
+   only matches may be in `passway/passway-stream.conf`: its `listen 443;` and
+   `listen [::]:443;` lines, plus a comment that mentions :443. The stream block
+   owns :443, and nginx refuses to start if http also listens there.
+
+5. **Show the owner the full diff against the backup, and wait for an
+   explicit yes:**
 
    ```sh
-   sudo diff -ruN /etc/nginx /tmp/nginx.new
+   sudo diff -ruN /etc/nginx.bak-$(date +%F) /tmp/nginx.new
    ```
 
    This changes how the owner's other apps are served, so it is never applied
    without approval. Apply it in an agreed window.
 
-## 5. Test, then reload
+## 5. Apply in place, test, then reload
+
+Only after the owner's yes. The order matters: **no reload until `nginx -t`
+passes on the files in their real place.** nginx keeps serving the config it
+loaded at its last start or reload, so editing files on disk changes nothing
+for visitors until the reload.
 
 ```sh
-sudo nginx -t -c /tmp/nginx.new/nginx.conf      # the copy must pass first
-sudo rsync -a --delete /tmp/nginx.new/ /etc/nginx/
-sudo nginx -t && sudo systemctl reload nginx
+B=/etc/nginx.bak-$(date +%F)          # the §3 backup
+sudo rsync -a --delete /tmp/nginx.new/ /etc/nginx/   # the approved edits, in place; no reload
+sudo nginx -t                                         # tests the real paths
 ```
+
+- **If `nginx -t` fails:** put the backup back at once, and confirm that the
+  restored files pass again:
+
+  ```sh
+  sudo rsync -a --delete "$B"/ /etc/nginx/
+  sudo nginx -t                                       # must pass: the old config
+  ```
+
+  Don't reload. Fix the problem in `/tmp/nginx.new`, show the owner the new
+  diff, and start this section again.
+
+- **If `nginx -t` passes** (and the owner has said yes in §4):
+
+  ```sh
+  sudo systemctl reload nginx
+  ```
 
 A reload keeps the old workers serving if the new config fails to load.
 Moving :443 from http to stream is a listener change, and some setups only
