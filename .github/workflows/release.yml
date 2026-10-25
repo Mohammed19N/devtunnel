@@ -9,6 +9,15 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      # Without it the CLI ships with an empty default server (-X main.defaultServer=).
+      - name: Require PASSWAY_DEFAULT_SERVER
+        env:
+          PASSWAY_DEFAULT_SERVER: ${{ vars.PASSWAY_DEFAULT_SERVER }}
+        run: |
+          if [ -z "$PASSWAY_DEFAULT_SERVER" ]; then
+            echo "::error::Set the PASSWAY_DEFAULT_SERVER repository variable (e.g. https://passway.run) before releasing."
+            exit 1
+          fi
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
