@@ -764,16 +764,24 @@ func TestTunnelLogsNameAccount(t *testing.T) {
 	if resp.Ready == nil {
 		t.Fatalf("ready: %+v", resp.Error)
 	}
-	sess.Close()
-	deadline := time.Now().Add(3 * time.Second)
-	for !(logged("tunnel up") && logged("tunnel down")) {
-		if time.Now().After(deadline) {
-			lw.mu.Lock()
-			defer lw.mu.Unlock()
-			t.Fatalf("tunnel up/down lines lack account and login:\n%s", buf.String())
+	waitLogged := func(msg string) {
+		t.Helper()
+		deadline := time.Now().Add(3 * time.Second)
+		for !logged(msg) {
+			if time.Now().After(deadline) {
+				lw.mu.Lock()
+				defer lw.mu.Unlock()
+				t.Fatalf("no %q line with account and login:\n%s", msg, buf.String())
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
+	// Close only once "tunnel up" is logged: the server logs it after its
+	// Ready write returns, and yamux may report that write as failed if our
+	// close reaches it first, so the line would never come.
+	waitLogged("tunnel up")
+	sess.Close()
+	waitLogged("tunnel down")
 }
 
 func waitClosed(t *testing.T, sess *yamux.Session, what string) {
