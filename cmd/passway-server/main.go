@@ -281,6 +281,11 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		if cloud {
 			certStore = st
 		}
+		// The challenge solvers use our listeners, never a port of their own.
+		if plainLn != nil {
+			acmeCfg.httpAddr = plainLn.Addr().String()
+		}
+		acmeCfg.tlsAddr = tlsLn.Addr().String()
 		var err error
 		if tlsCfg, acmeChallenge, err = newCertManager(ctx, *domain, acmeCfg, certStore, log); err != nil {
 			closeListeners(plainLn, tlsLn)

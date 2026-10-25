@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/caddyserver/certmagic"
@@ -24,6 +26,10 @@ import (
 type acmeOpts struct {
 	email, dir, ca  string
 	cloudflareToken string
+	// httpAddr and tlsAddr are the bound plain and TLS listener addresses
+	// ("" = none). The on-demand challenge solvers point at them so
+	// certmagic never binds a port of its own.
+	httpAddr, tlsAddr string
 }
 
 // acmeDir is --acme-dir, defaulting to <dir of --db>/certs, else ./certs.
@@ -112,15 +118,70 @@ func buildCertManager(domain string, o acmeOpts, st *store.Store, log *slog.Logg
 				},
 			},
 		})
-		cm.onDemandIssuer = certmagic.NewACMEIssuer(cm.onDemand, certmagic.ACMEIssuer{
+		tmpl := certmagic.ACMEIssuer{
 			CA:     o.ca,
 			Email:  o.email,
 			Agreed: true,
 			Logger: zl,
-		})
+		}
+		if err := pointSolvers(&tmpl, o.httpAddr, o.tlsAddr); err != nil {
+			return nil, err
+		}
+		cm.onDemandIssuer = certmagic.NewACMEIssuer(cm.onDemand, tmpl)
 		cm.onDemand.Issuers = []certmagic.Issuer{cm.onDemandIssuer}
 	}
 	return cm, nil
+}
+
+// pointSolvers aims the HTTP-01 and TLS-ALPN-01 solvers at our own bound
+// listeners. A solver's Present tries to bind ListenHost:Alt*Port; with our
+// listener already there the bind fails as "in use", certmagic dials it,
+// finds it open and relies on it, so it never starts a stray challenge
+// server. Our listeners answer from the same in-memory challenge map
+// (httpChallenge on the plain listener, GetCertificate on the TLS one).
+//
+// ListenHost is shared by both solvers. An unspecified host (0.0.0.0, ::)
+// maps to 127.0.0.1, which the wildcard bind covers. HTTP-01 is disabled
+// when there is no plain listener, or when it is on another host than the
+// TLS listener, since the solver would then bind a port of its own.
+func pointSolvers(iss *certmagic.ACMEIssuer, httpAddr, tlsAddr string) error {
+	split := func(addr string) (string, int, error) {
+		host, p, err := net.SplitHostPort(addr)
+		if err != nil {
+			return "", 0, fmt.Errorf("acme: listener address %q: %w", addr, err)
+		}
+		port, err := strconv.Atoi(p)
+		if err != nil || port <= 0 {
+			return "", 0, fmt.Errorf("acme: listener address %q has no port", addr)
+		}
+		if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+			host = "127.0.0.1"
+		}
+		return host, port, nil
+	}
+	if tlsAddr == "" {
+		iss.DisableTLSALPNChallenge = true
+	} else {
+		host, port, err := split(tlsAddr)
+		if err != nil {
+			return err
+		}
+		iss.ListenHost, iss.AltTLSALPNPort = host, port
+	}
+	if httpAddr == "" {
+		iss.DisableHTTPChallenge = true
+		return nil
+	}
+	host, port, err := split(httpAddr)
+	if err != nil {
+		return err
+	}
+	if tlsAddr != "" && host != iss.ListenHost {
+		iss.DisableHTTPChallenge = true
+		return nil
+	}
+	iss.ListenHost, iss.AltHTTPPort = host, port
+	return nil
 }
 
 // getCertificate routes a handshake: names under the base domain only ever

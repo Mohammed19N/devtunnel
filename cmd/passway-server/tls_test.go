@@ -140,6 +140,47 @@ func TestNewCertManagerDecision(t *testing.T) {
 	}
 }
 
+// The on-demand solvers must point at our own listeners, so certmagic never
+// binds :80 or :443 itself: its bind fails as "in use" and it relies on our
+// HTTP-01 handler and GetCertificate (review M6).
+func TestOnDemandSolversUseOurListeners(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	st, err := store.Open(filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, c := range []struct {
+		name, http, tls string
+		host            string
+		httpPort, alpn  int
+		noHTTP          bool
+	}{
+		{"loopback", "127.0.0.1:8081", "127.0.0.1:9443", "127.0.0.1", 8081, 9443, false},
+		{"wildcard v4", "0.0.0.0:80", "0.0.0.0:443", "127.0.0.1", 80, 443, false},
+		{"wildcard v6", "[::]:80", "[::]:443", "127.0.0.1", 80, 443, false},
+		{"no plain listener", "", "127.0.0.1:9443", "127.0.0.1", 0, 9443, true},
+		{"different hosts", "127.0.0.1:8081", "192.0.2.10:443", "192.0.2.10", 0, 443, true},
+	} {
+		o := testACME(t)
+		o.httpAddr, o.tlsAddr = c.http, c.tls
+		cm, err := buildCertManager("passway.test", o, st, log)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		cm.cache.Stop()
+		iss := cm.onDemandIssuer
+		if iss.ListenHost != c.host || iss.AltTLSALPNPort != c.alpn || iss.DisableTLSALPNChallenge {
+			t.Errorf("%s: ListenHost %q AltTLSALPNPort %d disabled %v; want %q %d enabled",
+				c.name, iss.ListenHost, iss.AltTLSALPNPort, iss.DisableTLSALPNChallenge, c.host, c.alpn)
+		}
+		if iss.DisableHTTPChallenge != c.noHTTP || (!c.noHTTP && iss.AltHTTPPort != c.httpPort) {
+			t.Errorf("%s: HTTP-01 disabled %v port %d; want disabled %v port %d",
+				c.name, iss.DisableHTTPChallenge, iss.AltHTTPPort, c.noHTTP, c.httpPort)
+		}
+	}
+}
+
 func TestNewCertManagerSelfHosted(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cm, err := buildCertManager("passway.test", testACME(t), nil, log)
