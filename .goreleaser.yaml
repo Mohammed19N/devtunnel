@@ -1,0 +1,71 @@
+version: 2
+project_name: passway
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: passway
+    main: ./cmd/passway
+    binary: passway
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.defaultServer={{ .Env.PASSWAY_DEFAULT_SERVER }}
+  - id: passway-server
+    main: ./cmd/passway-server
+    binary: passway-server
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: passway
+    ids: [passway]
+    name_template: "passway_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+  - id: passway-server
+    ids: [passway-server]
+    name_template: "passway-server_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+homebrew_casks:
+  - name: passway
+    ids: [passway]
+    repository:
+      owner: mohammed19n
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/mohammed19n/passway
+    description: Open-source, self-hostable ngrok alternative
+    hooks:
+      post:
+        install_steps: |
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/passway"]
+
+dockers_v2:
+  - ids: [passway-server]
+    images:
+      - ghcr.io/mohammed19n/passway-server
+    tags:
+      - "{{ .Version }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
+
+changelog:
+  sort: asc

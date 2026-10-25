@@ -31,10 +31,16 @@ import (
 
 const idleTimeout = 120 * time.Second
 
+var version = "dev" // set with -ldflags at release
+
+func runVersion(w io.Writer) { fmt.Fprintf(w, "passway-server %s\n", version) }
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	var err error
-	if len(os.Args) > 1 && os.Args[1] == "admin" {
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		runVersion(os.Stdout)
+	} else if len(os.Args) > 1 && os.Args[1] == "admin" {
 		err = runAdmin(ctx, os.Args[2:], os.Stdout)
 	} else {
 		err = run(ctx, os.Args[1:], os.Stderr, nil)

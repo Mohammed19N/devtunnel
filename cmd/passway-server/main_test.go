@@ -574,3 +574,11 @@ func TestServeHTTPWithProxy(t *testing.T) {
 		t.Fatalf("run returned %v, want nil", err)
 	}
 }
+
+func TestServerVersion(t *testing.T) {
+	var buf bytes.Buffer
+	runVersion(&buf)
+	if got := buf.String(); got != "passway-server dev\n" {
+		t.Fatalf("got %q", got)
+	}
+}
