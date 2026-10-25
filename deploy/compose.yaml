@@ -1,0 +1,44 @@
+# Passway Cloud behind nginx, as a container. This is an alternative to
+# deploy/systemd/passway-server.service: run one or the other, not both.
+#
+#   docker compose -f deploy/compose.yaml --env-file /etc/passway/env up -d
+#
+# --env-file fills the ${...} values in the command below. env_file passes
+# the same file into the container, which is where the secrets are read.
+#
+# The ports are published on loopback only, where nginx expects them
+# (deploy/nginx). The PROXY header travels inside the TCP stream, so Docker's
+# port forwarding doesn't hide client IPs.
+#
+# For a self-hosted relay on its own machine, see docs/self-hosting.md.
+
+services:
+  passway:
+    image: ghcr.io/mohammed19n/passway-server:latest
+    restart: unless-stopped
+    env_file: /etc/passway/env
+    environment:
+      PASSWAY_MODE: cloud
+    command:
+      - --domain=${PASSWAY_DOMAIN}
+      - --tls-mode=acme
+      - --proxy-protocol
+      - --tls-addr=:9443
+      - --addr=:8081
+      - --public-port=443
+      - --db=/data/passway.db
+      - --acme-email=${PASSWAY_ACME_EMAIL}
+      - --github-client-id=${PASSWAY_GITHUB_CLIENT_ID}
+      - --stripe-price-pro=${PASSWAY_STRIPE_PRICE_PRO}
+      - --admin-github-ids=${PASSWAY_ADMIN_GITHUB_IDS}
+      - --legal-operator=${PASSWAY_LEGAL_OPERATOR}
+      - --legal-jurisdiction=${PASSWAY_LEGAL_JURISDICTION}
+      - --abuse-email=${PASSWAY_ABUSE_EMAIL}
+    ports:
+      - "127.0.0.1:9443:9443"
+      - "127.0.0.1:8081:8081"
+    volumes:
+      - passway-data:/data
+
+volumes:
+  passway-data:

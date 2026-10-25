@@ -35,10 +35,12 @@ name the client asks for with `--name`.
 | `--rate-limit` | `0` | Maximum requests per minute for each tunnel; over it, visitors get `429` with `Retry-After`. `0` is unlimited. |
 | `--max-conns-per-tunnel` | `64` | Maximum concurrent proxied connections per tunnel. |
 | `--browser-warning` | `false` | Show a one-time warning page to browser page loads before they reach a tunnel. Webhooks and other API traffic are not interrupted. Clients can skip it with a `Passway-Skip-Warning` header. |
+| `--block-words` | `false` | Refuse tunnel names containing brand names and common phishing terms (`paypal`, `login`, `stripe`, ...). Always on in cloud mode. |
+| `--proxy-protocol` | `false` | Require a PROXY protocol header (v1 or v2) on every TLS connection, so the server sees real client IPs behind a TCP passthrough proxy such as nginx `stream`. Connections without one are closed. |
 
-Self-hosted tunnels are unlimited: no concurrent-tunnel, bandwidth or
-reserved-subdomain limits. Requested names containing blocked words (brand
-names and common phishing terms) are refused.
+Self-hosted tunnels are unlimited: there are no concurrent-tunnel, bandwidth or
+reserved-subdomain limits. Any valid name can be requested unless you pass
+`--block-words`. Edge pages (offline, errors) carry no Passway branding.
 
 ## Tokens
 
@@ -73,39 +75,92 @@ on a fresh install. The token is printed once. Only its hash is stored.
   [Public Suffix List](https://publicsuffix.org/) so browsers isolate cookies
   between tunnels.
 
-## systemd (placeholder)
+## Docker
+
+The image is `ghcr.io/mohammed19n/passway-server`. It is a static binary on
+distroless, runs as a non-root user and keeps its data in `/data`.
+
+```sh
+docker volume create passway
+docker run -d --name passway --restart unless-stopped \
+  -p 80:8080 -p 443:8443 -v passway:/data \
+  -e PASSWAY_CLOUDFLARE_API_TOKEN=... \
+  ghcr.io/mohammed19n/passway-server \
+  --domain tunnels.example.com --addr :8080 --tls-addr :8443 --public-port 443 \
+  --tls-mode acme --acme-email you@example.com --db /data/passway.db
+
+docker exec passway /passway-server admin --db /data/passway.db token create laptop
+```
+
+- The container listens on unprivileged ports, and Docker maps 80 and 443 to
+  them. `--public-port 443` keeps the port out of tunnel URLs.
+- `--db` enables admin tokens. Certificates go to `/data/certs`.
+- A named volume works as is. A bind-mounted host directory must be writable
+  by uid 65532 (`sudo chown 65532:65532 <dir>`).
+
+## systemd
+
+Create a user and copy the binary from the release archive:
+
+```sh
+sudo useradd --system --home-dir /var/lib/passway --shell /usr/sbin/nologin passway
+sudo install -m 0755 passway-server /usr/local/bin/
+```
+
+`/etc/systemd/system/passway-server.service`:
 
 ```ini
 [Unit]
 Description=Passway relay
 After=network-online.target
+Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/passway-server --domain tunnels.example.com \
-  --tls-addr :443 --tls-cert /etc/passway/fullchain.pem --tls-key /etc/passway/privkey.pem \
-  --db /var/lib/passway/p.db
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-DynamicUser=yes
+User=passway
+Group=passway
+# Holds only the Cloudflare token (mode 0600): PASSWAY_CLOUDFLARE_API_TOKEN=...
+EnvironmentFile=/etc/passway/env
 StateDirectory=passway
+ExecStart=/usr/local/bin/passway-server --domain tunnels.example.com \
+  --addr :80 --tls-addr :443 --tls-mode acme --acme-email you@example.com \
+  --db /var/lib/passway/passway.db
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/passway
+PrivateTmp=true
+ProtectHome=true
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-`DynamicUser=yes` cannot read key files under `/etc/passway` unless they are
-world-readable, which a private key should not be. Use `LoadCredential=` to
-pass the certificate and key, or replace `DynamicUser` with a dedicated
-`User=`/`Group=` that owns them.
-
-## Docker (placeholder)
-
-The official image ships in a later milestone. The command will look like:
-
 ```sh
-docker run -p 80:80 -p 443:443 -v passway:/data ghcr.io/mohammed19n/passway-server \
-  --domain tunnels.example.com --db /data/p.db ...
+sudo systemctl daemon-reload && sudo systemctl enable --now passway-server
+sudo -u passway passway-server admin --db /var/lib/passway/passway.db token create laptop
 ```
+
+With `--tls-mode files` instead, make the key readable by the `passway` user
+only.
+
+## Behind an existing nginx
+
+If nginx already owns ports 80 and 443, let it pass TLS through by SNI and
+keep its own sites:
+
+- run passway-server on loopback (`--tls-addr 127.0.0.1:9443 --addr 127.0.0.1:8081 --public-port 443 --proxy-protocol`);
+- use the nginx snippets in [`deploy/nginx/`](../deploy/nginx).
+
+[deploy.md](deploy.md) walks through it for the hosted cloud, and the same
+steps apply to a self-hosted relay.
+
+## Backups
+
+`passway-server admin --db PATH backup <dest>` writes a consistent copy of the
+database while the server runs. It refuses an existing `<dest>`, so use dated
+names. [`deploy/backup.cron`](../deploy/backup.cron) is a nightly example.
 
 ## Admin commands
 
@@ -117,7 +172,7 @@ passway-server admin --db PATH <command>
   ban user <login> [--reason R]    ban host <label> [--reason R]
   unban user <login>               unban host <label>
   set-plan <login> free|pro        whois <label>
-  admit <login>
+  admit <login>                    backup <dest>
   token create <name>              token list        token revoke <id>
 ```
 

@@ -1,0 +1,18 @@
+# Nightly Passway database backup. Install as /etc/cron.d/passway (mode 0644,
+# owned by root). Create the backup directory first:
+#
+#   sudo install -d -o passway -g passway -m 0750 /var/lib/passway/backups
+#
+# `admin backup` writes a consistent copy while the server runs, and refuses
+# to overwrite an existing file, so each night gets a dated name. In crontab
+# lines, % must be escaped as \%.
+
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# 03:15 every night: back up, then keep 14 days of local copies.
+15 3 * * * passway passway-server admin --db /var/lib/passway/passway.db backup /var/lib/passway/backups/passway-$(date +\%F).db && find /var/lib/passway/backups -name 'passway-*.db' -mtime +14 -delete
+
+# 03:45: copy off the machine. Pick your own tool and destination, and
+# uncomment. For example, with rclone configured for root:
+# 45 3 * * * root rclone copy /var/lib/passway/backups remote:passway-backups --max-age 25h

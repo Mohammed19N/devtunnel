@@ -1,0 +1,64 @@
+# Passway Cloud behind nginx (deploy/nginx). Install:
+#
+#   sudo useradd --system --home-dir /var/lib/passway --shell /usr/sbin/nologin passway
+#   sudo install -m 0755 passway-server /usr/local/bin/passway-server
+#   sudo install -d -m 0750 /etc/passway
+#   sudo install -m 0600 passway.env.example /etc/passway/env   # then fill it in
+#   sudo install -m 0644 passway-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now passway-server
+#
+# Every value that differs between installs is in /etc/passway/env. Secrets
+# live only there; none of them has a flag.
+
+[Unit]
+Description=Passway tunnel server (cloud)
+Documentation=https://github.com/mohammed19n/passway/blob/main/docs/deploy.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=passway
+Group=passway
+EnvironmentFile=/etc/passway/env
+Environment=PASSWAY_MODE=cloud
+# /var/lib/passway: the database, plus certmagic's certificates in certs/.
+StateDirectory=passway
+StateDirectoryMode=0750
+
+# nginx owns :80 and :443. It passes TLS through to 127.0.0.1:9443 with a
+# PROXY header and proxies plain HTTP to 127.0.0.1:8081. Public URLs use
+# port 443.
+ExecStart=/usr/local/bin/passway-server \
+    --domain=${PASSWAY_DOMAIN} \
+    --tls-mode acme --proxy-protocol --tls-addr 127.0.0.1:9443 --addr 127.0.0.1:8081 --public-port 443 --db /var/lib/passway/passway.db \
+    --acme-email=${PASSWAY_ACME_EMAIL} \
+    --github-client-id=${PASSWAY_GITHUB_CLIENT_ID} \
+    --stripe-price-pro=${PASSWAY_STRIPE_PRICE_PRO} \
+    --admin-github-ids=${PASSWAY_ADMIN_GITHUB_IDS} \
+    "--legal-operator=${PASSWAY_LEGAL_OPERATOR}" \
+    "--legal-jurisdiction=${PASSWAY_LEGAL_JURISDICTION}" \
+    --abuse-email=${PASSWAY_ABUSE_EMAIL}
+
+Restart=on-failure
+RestartSec=5s
+# Shutdown closes the tunnels, then gives in-flight requests up to 10s.
+TimeoutStopSec=30s
+LimitNOFILE=65536
+
+# Hardening. Both ports are unprivileged, so no capabilities are needed.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/passway
+PrivateTmp=true
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
