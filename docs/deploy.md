@@ -317,10 +317,13 @@ sudo install -m 0644 deploy/backup.cron /etc/cron.d/passway
 - `admin backup` refuses an existing destination, so the dated name is
   required.
 - Copying the backups off the VPS is up to the owner. Fill in the commented
-  rclone line, or use any tool, and test one restore:
+  rclone line, or use any tool, and test one restore. Stop the service
+  first, then remove the `-wal` and `-shm` files next to the database: a WAL
+  left by an unclean stop would otherwise be replayed onto the restored file.
 
   ```sh
   sudo systemctl stop passway-server
+  sudo rm -f /var/lib/passway/passway.db-wal /var/lib/passway/passway.db-shm
   sudo -u passway cp /var/lib/passway/backups/passway-<date>.db /var/lib/passway/passway.db
   sudo systemctl start passway-server
   ```
