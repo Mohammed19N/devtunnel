@@ -3,8 +3,10 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +30,7 @@ import (
 	"github.com/mohammed19n/passway/internal/inspector"
 	"github.com/mohammed19n/passway/internal/protocol"
 	"github.com/mohammed19n/passway/internal/server"
+	"github.com/mohammed19n/passway/internal/server/billing"
 	"github.com/mohammed19n/passway/internal/server/dashboard"
 	"github.com/mohammed19n/passway/internal/server/store"
 )
@@ -42,6 +45,9 @@ type opts struct {
 	rateLimit      int  // server requests/minute per tunnel; 0 = off
 	browserWarning bool // server shows the interstitial to browser GETs
 	cloud          bool // cloud mode: store, dashboard and account directory; no auto-started tunnel
+
+	billing  *fakeStripe        // cloud only: enables billing against this fake Stripe
+	resolver dashboard.Resolver // cloud only: answers the custom-domain DNS checks
 }
 
 type env struct {
@@ -52,7 +58,7 @@ type env struct {
 	scheme     string
 	insp       *inspector.Inspector // nil unless opts.inspector
 	store      *store.Store         // cloud only
-	base       string               // cloud only: the base-domain URL, http://localhost:<port>
+	base       string               // the base-domain URL, http://localhost:<port>
 }
 
 var discard = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -89,7 +95,8 @@ func setupEnv(t *testing.T, o opts) (*env, *server.Server) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { st.Close() })
-		dash, err := dashboard.New(dashboard.Config{Store: st, BaseURL: baseURL, DevLogin: true, Logger: discard,
+		// Mirrors the cloud wiring in cmd/passway-server.
+		dcfg := dashboard.Config{Store: st, BaseURL: baseURL, DevLogin: true, Logger: discard,
 			Tunnels: func(id string) []dashboard.TunnelInfo {
 				var out []dashboard.TunnelInfo
 				for _, tn := range srv.TunnelsFor(id) {
@@ -97,12 +104,24 @@ func setupEnv(t *testing.T, o opts) (*env, *server.Server) {
 				}
 				return out
 			},
-			Disconnect: func(id string, token int64) { srv.CloseTokenTunnels(id, token) }})
+			Disconnect:    func(id string, token int64) { srv.CloseTokenTunnels(id, token) },
+			PlanChanged:   func(id int64) { srv.CloseAccountTunnels(strconv.FormatInt(id, 10)) },
+			Resolver:      o.resolver,
+			DomainEvicted: func(host string) { srv.CloseHostTunnels(host) },
+		}
+		if o.billing != nil {
+			dcfg.Billing = &billing.Client{Key: "sk_test_e2e", BaseURL: o.billing.srv.URL}
+			dcfg.ProPrice = billing.Price{ID: "price_e2e", Currency: "usd", Interval: "month", UnitAmount: 700}
+			dcfg.PriceID = "price_e2e"
+			dcfg.WebhookSecret = o.billing.secret
+		}
+		dash, err := dashboard.New(dcfg)
 		if err != nil {
 			t.Fatal(err)
 		}
 		cfg.Directory = &store.Directory{S: st}
 		cfg.Dashboard = dash
+		cfg.BlockWords = true
 	}
 	srv = server.New(cfg)
 	ts.Config.Handler = srv
@@ -162,7 +181,7 @@ func setupEnv(t *testing.T, o opts) (*env, *server.Server) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("tunnel never became ready")
 	}
-	e := &env{port: port, scheme: scheme, publicHost: fmt.Sprintf("%s.localhost:%d", r.Name, port), local: local, insp: insp}
+	e := &env{port: port, scheme: scheme, publicHost: fmt.Sprintf("%s.localhost:%d", r.Name, port), local: local, insp: insp, base: baseURL}
 	base := http.DefaultTransport
 	if o.tls {
 		base = ts.Client().Transport
@@ -771,6 +790,14 @@ func (b *browserSession) post(path string, form url.Values) (int, string) {
 // postFrom posts form to path with the CSRF token from the page at from.
 func (b *browserSession) postFrom(from, path string, form url.Values) (int, string) {
 	b.t.Helper()
+	resp := b.submit(from, path, form)
+	defer resp.Body.Close()
+	return resp.StatusCode, readAll(b.t, resp.Body)
+}
+
+// submit is postFrom returning the whole response; the caller closes its body.
+func (b *browserSession) submit(from, path string, form url.Values) *http.Response {
+	b.t.Helper()
 	_, page := b.get(from)
 	m := csrfRe.FindStringSubmatch(page)
 	if m == nil {
@@ -784,8 +811,7 @@ func (b *browserSession) postFrom(from, path string, form url.Values) (int, stri
 	if err != nil {
 		b.t.Fatal(err)
 	}
-	defer resp.Body.Close()
-	return resp.StatusCode, readAll(b.t, resp.Body)
+	return resp
 }
 
 func (b *browserSession) newToken(name string) string {
@@ -809,17 +835,28 @@ func (e *env) startClient(t *testing.T, token, name string, handler http.Handler
 // stops the client (like Ctrl-C) and waits for it to exit.
 func (e *env) startStoppableClient(t *testing.T, token, name string, handler http.Handler) (protocol.Ready, <-chan error, func()) {
 	t.Helper()
-	ready := make(chan protocol.Ready, 4)
+	r, _, res, stop := e.runClient(t, client.Config{Token: token, Name: name, Handler: handler})
+	return r, res, stop
+}
+
+// runClient runs a tunnel client with cfg (Server, Target, Logger and
+// OnReady are filled in) and waits for its first Ready. ready receives the
+// Ready of every later reconnect.
+func (e *env) runClient(t *testing.T, cfg client.Config) (first protocol.Ready, ready <-chan protocol.Ready, result <-chan error, stop func()) {
+	t.Helper()
+	readyc := make(chan protocol.Ready, 4)
 	res := make(chan error, 1)
 	done := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
-	target, _ := url.Parse(e.local.URL)
+	cfg.Server = e.base
+	cfg.Target, _ = url.Parse(e.local.URL)
+	cfg.Logger = discard
+	cfg.OnReady = func(r protocol.Ready) { readyc <- r }
 	go func() {
 		defer close(done)
-		res <- client.Run(ctx, client.Config{Server: e.base, Token: token, Name: name, Target: target, Handler: handler,
-			Logger: discard, OnReady: func(r protocol.Ready) { ready <- r }})
+		res <- client.Run(ctx, cfg)
 	}()
-	stop := func() {
+	stop = func() {
 		cancel()
 		select {
 		case <-done:
@@ -829,14 +866,14 @@ func (e *env) startStoppableClient(t *testing.T, token, name string, handler htt
 	}
 	t.Cleanup(stop)
 	select {
-	case r := <-ready:
-		return r, res, stop
+	case r := <-readyc:
+		return r, readyc, res, stop
 	case err := <-res:
 		t.Fatalf("client exited before ready: %v", err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("tunnel never became ready")
 	}
-	return protocol.Ready{}, nil, nil
+	return protocol.Ready{}, nil, nil, nil
 }
 
 func TestCloudSignupLoginClaim(t *testing.T) {
@@ -1036,5 +1073,288 @@ func TestSelfHostedStillRandomNames(t *testing.T) {
 	defer resp.Body.Close()
 	if body := readAll(t, resp.Body); resp.StatusCode != 200 || body != "hi" || !strings.Contains(host, "-") {
 		t.Fatalf("%s: %d %q", host, resp.StatusCode, body)
+	}
+}
+
+// --- launch: billing, custom domains, modes ---
+
+// fakeStripe is a Stripe API stand-in: Checkout returns a fixed session URL.
+// Webhooks are signed with secret, as Stripe signs them.
+type fakeStripe struct {
+	srv    *httptest.Server
+	secret string
+	mu     sync.Mutex
+	ref    string // client_reference_id of the last Checkout Session
+}
+
+const fakeCheckoutURL = "https://checkout.stripe.com/c/pay/cs_test_e2e"
+
+func newFakeStripe(t *testing.T) *fakeStripe {
+	t.Helper()
+	f := &fakeStripe{secret: "whsec_e2e"}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/checkout/sessions" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = r.ParseForm()
+		f.mu.Lock()
+		f.ref = r.PostForm.Get("client_reference_id")
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"url":%q}`, fakeCheckoutURL)
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeStripe) clientRef() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ref
+}
+
+// sign returns a Stripe-Signature header for payload, signed now.
+func (f *fakeStripe) sign(payload []byte) string {
+	ts := time.Now().Unix()
+	m := hmac.New(sha256.New, []byte(f.secret))
+	fmt.Fprintf(m, "%d.%s", ts, payload)
+	return fmt.Sprintf("t=%d,v1=%s", ts, hex.EncodeToString(m.Sum(nil)))
+}
+
+// sendWebhook posts a signed event to the server's Stripe webhook endpoint.
+func (e *env) sendWebhook(t *testing.T, f *fakeStripe, payload string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, e.base+"/stripe/webhook", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Stripe-Signature", f.sign([]byte(payload)))
+	resp, err := e.httpc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readAll(t, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("webhook: %d %s", resp.StatusCode, body)
+	}
+}
+
+// fakeResolver answers the custom-domain DNS checks from maps.
+type fakeResolver struct {
+	mu    sync.Mutex
+	cname map[string]string
+	txt   map[string][]string
+}
+
+func newFakeResolver() *fakeResolver {
+	return &fakeResolver{cname: map[string]string{}, txt: map[string][]string{}}
+}
+
+func (f *fakeResolver) set(host, cname, txt string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cname[host] = cname
+	f.txt["_passway."+host] = []string{txt}
+}
+
+func (f *fakeResolver) LookupCNAME(_ context.Context, host string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if c, ok := f.cname[host]; ok {
+		return c, nil
+	}
+	return "", &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+}
+
+func (f *fakeResolver) LookupTXT(_ context.Context, name string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.txt[name]; ok {
+		return v, nil
+	}
+	return nil, &net.DNSError{Err: "no such host", Name: name, IsNotFound: true}
+}
+
+func (e *env) userID(t *testing.T, login string) int64 {
+	t.Helper()
+	u, err := e.store.UserByLogin(context.Background(), login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.ID
+}
+
+func (e *env) planOf(t *testing.T, login string) string {
+	t.Helper()
+	u, err := e.store.UserByLogin(context.Background(), login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.Plan
+}
+
+func TestCloudUpgradeViaStripe(t *testing.T) {
+	stripe := newFakeStripe(t)
+	e, _ := setupEnv(t, opts{cloud: true, billing: stripe})
+	alice := e.devLogin(t, "alice")
+	tok := alice.newToken("laptop")
+	id := e.userID(t, "alice")
+	_, ready1, res1, _ := e.runClient(t, client.Config{Token: tok})
+
+	// Upgrade: the dashboard sends the browser to Stripe Checkout.
+	resp := alice.submit("/dashboard", "/billing/checkout", url.Values{})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != fakeCheckoutURL {
+		t.Fatalf("checkout: %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if got := stripe.clientRef(); got != strconv.FormatInt(id, 10) {
+		t.Fatalf("checkout client_reference_id = %q, want %d", got, id)
+	}
+
+	// Stripe reports the paid Checkout; the account becomes Pro.
+	now := time.Now().Unix()
+	e.sendWebhook(t, stripe, fmt.Sprintf(`{"id":"evt_e2e_1","object":"event","type":"checkout.session.completed","created":%d,`+
+		`"data":{"object":{"object":"checkout.session","mode":"subscription","payment_status":"paid","client_reference_id":"%d","customer":"cus_e2e","subscription":"sub_e2e"}}}`, now, id))
+	if p := e.planOf(t, "alice"); p != "pro" {
+		t.Fatalf("plan after checkout = %q, want pro", p)
+	}
+	if _, page := alice.get("/dashboard?upgraded=1"); !strings.Contains(page, "Payment received — your plan updates in a few seconds.") {
+		t.Fatalf("no upgrade notice on the dashboard:\n%s", page)
+	}
+	// The plan change reconnects the live tunnel under the Pro limits.
+	recvTimeout(t, ready1, 30*time.Second)
+
+	if code, body := alice.post("/dashboard/subdomains", url.Values{"name": {"acme"}}); code != http.StatusSeeOther {
+		t.Fatalf("claim: %d %s", code, body)
+	}
+	// No --name: the second client gets the account's next free subdomain.
+	// (A --name acme client would get name_not_owned after the downgrade,
+	// since Free keeps only the first subdomain usable.)
+	r2, ready2, res2, _ := e.runClient(t, client.Config{Token: tok})
+	if r2.Name != "acme" {
+		t.Fatalf("second tunnel: %+v", r2)
+	}
+
+	// The subscription ends; both tunnels drop, and only one fits on Free.
+	e.sendWebhook(t, stripe, fmt.Sprintf(`{"id":"evt_e2e_2","object":"event","type":"customer.subscription.deleted","created":%d,`+
+		`"data":{"object":{"id":"sub_e2e","object":"subscription","customer":"cus_e2e","status":"canceled"}}}`, now+1))
+	if p := e.planOf(t, "alice"); p != "free" {
+		t.Fatalf("plan after cancellation = %q, want free", p)
+	}
+	var refused error
+	var survivor <-chan protocol.Ready
+	select {
+	case refused = <-res1:
+		survivor = ready2
+	case refused = <-res2:
+		survivor = ready1
+	case <-time.After(30 * time.Second):
+		t.Fatal("no tunnel was refused after the downgrade")
+	}
+	var pe *protocol.Error
+	if !errors.As(refused, &pe) || pe.Code != protocol.CodeLimitReached ||
+		pe.Message != "tunnel limit reached: your Free plan allows 1 concurrent tunnel(s)" {
+		t.Fatalf("refused tunnel ended with %v, want limit_reached", refused)
+	}
+	recvTimeout(t, survivor, 30*time.Second) // the other one reconnected
+}
+
+func TestCloudCustomDomain(t *testing.T) {
+	res := newFakeResolver()
+	e, _ := setupEnv(t, opts{cloud: true, resolver: res, handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "app page for %s", r.Host)
+	})})
+	alice := e.devLogin(t, "alice")
+	tok := alice.newToken("laptop")
+	ctx := context.Background()
+	id := e.userID(t, "alice")
+	if err := e.store.SetPlan(ctx, id, "pro"); err != nil {
+		t.Fatal(err)
+	}
+	const host = "hooks.example.test"
+	if code, body := alice.post("/dashboard/domains", url.Values{"host": {host}}); code != http.StatusSeeOther {
+		t.Fatalf("add domain: %d %s", code, body)
+	}
+
+	// Not verified yet: the client is refused with the dashboard hint.
+	target, _ := url.Parse(e.local.URL)
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	err := client.Run(cctx, client.Config{Server: e.base, Token: tok, Domain: host, Target: target, Logger: discard})
+	cancel()
+	var pe *protocol.Error
+	if !errors.As(err, &pe) || pe.Code != protocol.CodeNameNotOwned ||
+		pe.Message != `you don't own "hooks.example.test" or it isn't verified; add it in the dashboard` {
+		t.Fatalf("unverified domain: %v", err)
+	}
+
+	doms, err := e.store.Domains(ctx, id)
+	if err != nil || len(doms) != 1 {
+		t.Fatalf("domains: %+v %v", doms, err)
+	}
+	res.set(host, "edge.localhost.", "passway-verify="+doms[0].Token)
+	if code, body := alice.postFrom("/dashboard/domains", "/dashboard/domains/verify", url.Values{"host": {host}}); code != http.StatusSeeOther {
+		t.Fatalf("verify: %d %s", code, body)
+	}
+
+	r, _, _, _ := e.runClient(t, client.Config{Token: tok, Domain: host})
+	if !strings.Contains(r.URL, host) {
+		t.Fatalf("ready: %+v", r)
+	}
+	pub := fmt.Sprintf("%s:%d", host, e.port)
+	resp, err := e.do(ctx, "POST", "/hook", pub, strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readAll(t, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || body != "app page for "+pub {
+		t.Fatalf("custom domain request: %d %q", resp.StatusCode, body)
+	}
+}
+
+// offlinePage fetches the HTML page for a host with no tunnel.
+func (e *env) offlinePage(t *testing.T) string {
+	t.Helper()
+	req := newBrowserGET(t, fmt.Sprintf("http://nobody.localhost:%d/", e.port))
+	resp, err := e.httpc.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body := readAll(t, resp.Body)
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(body, "This tunnel is offline") {
+		t.Fatalf("offline page: %d %s", resp.StatusCode, body)
+	}
+	return body
+}
+
+// Self-hosted servers carry no Passway branding and no brand-word blocklist
+// (owner rulings R1 and R3 apply to the cloud only).
+func TestSelfHostedNoFooterNoBlocklist(t *testing.T) {
+	e, _ := setupEnv(t, opts{})
+	if body := e.offlinePage(t); strings.Contains(body, "Served by") {
+		t.Fatalf("self-hosted page has the footer:\n%s", body)
+	}
+	r, _, _, _ := e.runClient(t, client.Config{Name: "stripe-hooks"})
+	if r.Name != "stripe-hooks" {
+		t.Fatalf("ready: %+v", r)
+	}
+}
+
+// The cloud counterpart: the footer shows on unknown hosts and brand words
+// are refused.
+func TestCloudFooterAndBlocklist(t *testing.T) {
+	e, _ := setupEnv(t, opts{cloud: true})
+	if body := e.offlinePage(t); !strings.Contains(body, "Served by") {
+		t.Fatalf("cloud page has no footer:\n%s", body)
+	}
+	tok := e.devLogin(t, "alice").newToken("laptop")
+	target, _ := url.Parse(e.local.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := client.Run(ctx, client.Config{Server: e.base, Token: tok, Name: "stripe-hooks", Target: target, Logger: discard})
+	var pe *protocol.Error
+	if !errors.As(err, &pe) || pe.Code != protocol.CodeInvalidName || !strings.Contains(pe.Message, "blocked word") {
+		t.Fatalf("got %v, want a blocked-word refusal", err)
 	}
 }
