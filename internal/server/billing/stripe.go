@@ -39,6 +39,16 @@ var zeroDecimal = map[string]bool{
 	"vuv": true, "xaf": true, "xof": true, "xpf": true,
 }
 
+// Decimal renders the amount as a plain decimal string in the currency's
+// major unit, e.g. "7.00" (or "1000" for a zero-decimal currency), as
+// schema.org's Offer.price wants it.
+func (p Price) Decimal() string {
+	if zeroDecimal[strings.ToLower(p.Currency)] {
+		return fmt.Sprintf("%d", p.UnitAmount)
+	}
+	return fmt.Sprintf("%d.%02d", p.UnitAmount/100, p.UnitAmount%100)
+}
+
 // Label renders the price: "$7 / month" (or "$7.50 / month") for usd,
 // otherwise "7.00 EUR / month".
 func (p Price) Label() string {

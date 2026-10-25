@@ -1,0 +1,76 @@
+{{define "home"}}{{template "sitehead" .}}
+<section class="hero wrap">
+<h1>Public URLs for localhost, with a webhook inspector built in</h1>
+<p class="lede">One command gives your local app a public HTTPS URL. Every request that comes through shows up in an inspector on your machine, where you can replay it, edit and replay it, or copy it as cURL.</p>
+<div class="cta">
+{{if .User}}<a class="btn" href="/dashboard">Open dashboard</a>{{else}}<a class="btn" href="/login">{{template "github-icon"}}Sign in with GitHub</a>{{end}}
+<a class="btn ghost" href="/docs">Read the quickstart</a>
+</div>
+<div class="terminal" aria-label="Install and run">
+<p class="cmt"># Install (Linux and macOS)</p>
+<pre><code>{{.InstallCmd}}</code></pre>
+<p class="cmt"># or with Homebrew</p>
+<pre><code>brew install mohammed19n/tap/passway</code></pre>
+<p class="cmt"># Expose port 3000</p>
+<pre><code>passway http 3000</code></pre>
+</div>
+</section>
+
+<figure class="shot wrap">
+<img src="{{asset "inspector.png"}}" width="1280" height="800" alt="The Passway inspector at localhost:4040 listing captured requests, with the selected request's headers and body and buttons to replay it">
+<figcaption>The inspector runs locally at localhost:4040. Captured requests stay on your machine.</figcaption>
+</figure>
+
+<section class="features wrap" aria-labelledby="features">
+<h2 id="features">What you get</h2>
+<div class="grid3">
+<article>
+<h3>A public HTTPS URL in one command</h3>
+<p><code>passway http 3000</code> connects your local port to a public URL. Your account's subdomain stays the same between sessions, so you set up a webhook endpoint once.</p>
+</article>
+<article>
+<h3>Every request, inspected</h3>
+<p>The inspector at <code>localhost:4040</code> shows the method, path, headers and body of each request and the response your app sent, live as they arrive.</p>
+</article>
+<article>
+<h3>Replay instead of re-triggering</h3>
+<p>Send a captured webhook to your app again with one click, change it first with Edit &amp; Replay, or copy it as a <code>curl</code> command.</p>
+</article>
+</div>
+</section>
+
+<section class="oss wrap" aria-labelledby="oss">
+<h2 id="oss">Open source, and you can run it yourself</h2>
+<p>The CLI is MIT licensed and the server is AGPL-3.0. Run your own server on your own domain as a single binary or a Docker image, with no account needed.</p>
+<p class="links"><a href="{{.RepoURL}}">Source code on GitHub</a> <a href="{{.RepoURL}}/blob/main/docs/self-hosting.md">Self-hosting guide</a></p>
+</section>
+
+<section class="plans wrap" aria-labelledby="plans">
+<h2 id="plans">Free and Pro</h2>
+<div class="grid2">
+<div class="plan">
+<h3>Free</h3>
+<p class="price">{{.Free.Price}}</p>
+<ul>
+<li>{{.Free.Tunnels}} tunnel at a time</li>
+<li>{{.Free.Subdomains}} reserved subdomain</li>
+<li>{{.Free.Bandwidth}} of bandwidth per month</li>
+<li>{{.Free.Rate}} requests per minute per tunnel</li>
+<li>Visitors in a browser see a warning page first; webhooks and API calls pass straight through</li>
+</ul>
+</div>
+<div class="plan pro">
+<h3>Pro</h3>
+<p class="price">{{.Pro.Price}}</p>
+<ul>
+<li>{{.Pro.Tunnels}} tunnels at a time</li>
+<li>{{.Pro.Subdomains}} reserved subdomains</li>
+<li>{{.Pro.Bandwidth}} of bandwidth per month</li>
+<li>{{.Pro.Rate}} requests per minute per tunnel</li>
+<li>{{.Pro.CustomDomains}} custom domains, and no browser warning page</li>
+</ul>
+</div>
+</div>
+<p class="center"><a href="/pricing">Compare the plans in detail</a></p>
+</section>
+{{template "sitefoot" .}}{{end}}

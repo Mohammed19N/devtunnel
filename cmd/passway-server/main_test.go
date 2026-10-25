@@ -582,3 +582,15 @@ func TestServerVersion(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestDashboardConfigLegalFlags(t *testing.T) {
+	fs := flag.NewFlagSet("x", flag.ContinueOnError)
+	cf := cloudFlags(fs)
+	if err := fs.Parse([]string{"--legal-operator", "Example Ltd", "--legal-jurisdiction", "England and Wales", "--abuse-email", "abuse@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	c := cf.dashboardConfig(nil, "http://localhost", "s")
+	if c.LegalOperator != "Example Ltd" || c.LegalJurisdiction != "England and Wales" || c.AbuseEmail != "abuse@example.com" {
+		t.Fatalf("config = %q %q %q", c.LegalOperator, c.LegalJurisdiction, c.AbuseEmail)
+	}
+}

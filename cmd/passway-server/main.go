@@ -76,19 +76,25 @@ type cloudOpts struct {
 	freeBandwidthCap            *int64
 	devLogin                    *bool
 	stripePricePro              *string
+	legalOperator               *string
+	legalJurisdiction           *string
+	abuseEmail                  *string
 }
 
 func cloudFlags(fs *flag.FlagSet) cloudOpts {
 	return cloudOpts{
-		db:               fs.String("db", "", "SQLite database path (required in cloud mode; in self-hosted mode it enables admin tokens)"),
-		ghID:             fs.String("github-client-id", "", "GitHub OAuth app client ID (cloud mode)"),
-		ghSecret:         fs.String("github-client-secret", "", "GitHub OAuth app client secret (cloud mode; default $PASSWAY_GITHUB_CLIENT_SECRET, the flag wins when set)"),
-		baseURL:          fs.String("base-url", "", "public dashboard URL (default <scheme>://<domain>[:port])"),
-		minGitHubAge:     fs.Duration("min-github-age", 48*time.Hour, "minimum GitHub account age to sign up (0 disables)"),
-		freeSignupCap:    fs.Int("free-signup-cap", 1000, "max Free accounts; further signups are waitlisted"),
-		freeBandwidthCap: fs.Int64("free-bandwidth-cap", 500<<30, "monthly bandwidth in bytes across all Free accounts"),
-		stripePricePro:   fs.String("stripe-price-pro", "", "Stripe price ID of the Pro plan (cloud mode; billing also needs $PASSWAY_STRIPE_SECRET_KEY and $PASSWAY_STRIPE_WEBHOOK_SECRET)"),
-		devLogin:         fs.Bool("dev-login", false, "enable the passwordless /auth/dev login (localhost domains only)"),
+		db:                fs.String("db", "", "SQLite database path (required in cloud mode; in self-hosted mode it enables admin tokens)"),
+		ghID:              fs.String("github-client-id", "", "GitHub OAuth app client ID (cloud mode)"),
+		ghSecret:          fs.String("github-client-secret", "", "GitHub OAuth app client secret (cloud mode; default $PASSWAY_GITHUB_CLIENT_SECRET, the flag wins when set)"),
+		baseURL:           fs.String("base-url", "", "public dashboard URL (default <scheme>://<domain>[:port])"),
+		minGitHubAge:      fs.Duration("min-github-age", 48*time.Hour, "minimum GitHub account age to sign up (0 disables)"),
+		freeSignupCap:     fs.Int("free-signup-cap", 1000, "max Free accounts; further signups are waitlisted"),
+		freeBandwidthCap:  fs.Int64("free-bandwidth-cap", 500<<30, "monthly bandwidth in bytes across all Free accounts"),
+		stripePricePro:    fs.String("stripe-price-pro", "", "Stripe price ID of the Pro plan (cloud mode; billing also needs $PASSWAY_STRIPE_SECRET_KEY and $PASSWAY_STRIPE_WEBHOOK_SECRET)"),
+		devLogin:          fs.Bool("dev-login", false, "enable the passwordless /auth/dev login (localhost domains only)"),
+		legalOperator:     fs.String("legal-operator", "", `who runs the service, named on the terms, privacy and acceptable use pages (default "the operator of this service")`),
+		legalJurisdiction: fs.String("legal-jurisdiction", "", "whose laws govern the terms of service, e.g. \"England and Wales\""),
+		abuseEmail:        fs.String("abuse-email", "", "abuse contact address shown on the site (default abuse@<base host>)"),
 	}
 }
 
@@ -481,5 +487,8 @@ func (cf cloudOpts) dashboardConfig(st *store.Store, base, secret string) dashbo
 		MinGitHubAge:       *cf.minGitHubAge,
 		FreeSignupCap:      *cf.freeSignupCap,
 		DevLogin:           *cf.devLogin,
+		LegalOperator:      *cf.legalOperator,
+		LegalJurisdiction:  *cf.legalJurisdiction,
+		AbuseEmail:         *cf.abuseEmail,
 	}
 }

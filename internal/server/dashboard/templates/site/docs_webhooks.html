@@ -1,0 +1,65 @@
+{{define "docs_webhooks"}}{{template "sitehead" .}}
+<article class="wrap narrow doc">
+<p class="crumbs"><a href="/docs">Docs</a> / Webhooks</p>
+<h1>Debug Stripe, GitHub and Shopify webhooks locally</h1>
+<p class="lede">A webhook provider needs a public URL to deliver events to. Passway gives your local app one, and the inspector keeps a copy of every delivery so you can replay it while you fix your handler.</p>
+
+<nav class="toc" aria-label="On this page">
+<a href="#workflow">The workflow</a>
+<a href="#stripe">Stripe</a>
+<a href="#github">GitHub</a>
+<a href="#shopify">Shopify</a>
+<a href="#signatures">Signatures and replay</a>
+</nav>
+
+<section id="workflow">
+<h2>The workflow</h2>
+<ol>
+<li>Start your app locally, for example on port 3000.</li>
+<li>Open a tunnel:
+<pre><code>passway http 3000</code></pre>
+Your account's default subdomain stays the same every time, so you register the URL with the provider once. On Pro you can reserve more names in the dashboard and pick one with <code>--name</code>. Names that contain a provider's brand, such as <code>stripe-hooks</code>, are refused.</li>
+<li>Register <code>https://&lt;your-subdomain&gt;.{{.Host}}/your/webhook/path</code> with the provider.</li>
+<li>Trigger an event. It appears in the inspector at <a href="http://localhost:4040">localhost:4040</a> with the full headers and body, next to your app's response.</li>
+<li>Change your handler and press <strong>Replay</strong> to send the same delivery again, without triggering a new event at the provider.</li>
+</ol>
+<p>Webhook deliveries are not browser page loads, so the Free plan's browser warning page never gets in their way.</p>
+</section>
+
+<section id="stripe">
+<h2>Stripe</h2>
+<ol>
+<li>In the Stripe Dashboard, in test mode, open <strong>Developers → Webhooks</strong> and add an endpoint with your tunnel URL, for example <code>https://&lt;your-subdomain&gt;.{{.Host}}/webhooks/stripe</code>.</li>
+<li>Select the events you handle and copy the endpoint's signing secret (<code>whsec_…</code>) into your app's configuration.</li>
+<li>Trigger an event, for example by completing a test checkout. The delivery shows up in the inspector with its <code>Stripe-Signature</code> header.</li>
+</ol>
+<p>Stripe's official libraries reject a signature whose timestamp is older than their tolerance, five minutes by default. A replay keeps the original timestamp, so replay within that window or raise the tolerance in development.</p>
+</section>
+
+<section id="github">
+<h2>GitHub</h2>
+<ol>
+<li>In your repository, open <strong>Settings → Webhooks → Add webhook</strong>.</li>
+<li>Set the payload URL to your tunnel URL, for example <code>https://&lt;your-subdomain&gt;.{{.Host}}/webhooks/github</code>, the content type to <code>application/json</code>, and a secret.</li>
+<li>Choose the events and save. GitHub sends a <code>ping</code> event straight away, which you will see in the inspector.</li>
+</ol>
+<p>GitHub signs the body with your secret in the <code>X-Hub-Signature-256</code> header. The signature does not include a timestamp, so a replay verifies at any time.</p>
+</section>
+
+<section id="shopify">
+<h2>Shopify</h2>
+<ol>
+<li>For a store, open <strong>Settings → Notifications → Webhooks</strong> in the Shopify admin and create a webhook with your tunnel URL. For an app, add the URL to the webhook subscriptions in your app's configuration.</li>
+<li>Choose JSON as the format and the topic you handle, for example order creation.</li>
+<li>Use <strong>Send test notification</strong> or create a test order. The delivery appears in the inspector with its <code>X-Shopify-Hmac-Sha256</code> and <code>X-Shopify-Topic</code> headers.</li>
+</ol>
+<p>Shopify computes the HMAC over the raw body. Verify it against the bytes you received, before parsing the JSON.</p>
+</section>
+
+<section id="signatures">
+<h2>Signatures and replay</h2>
+<p><strong>Replay</strong> resends the captured request byte for byte, headers included, so signature checks pass the same way they did for the original delivery (subject to any timestamp tolerance). <strong>Edit &amp; Replay</strong> changes the request, so a signature over the body will no longer match: use it to test how your handler rejects bad signatures, or turn verification off locally while you experiment.</p>
+<p>The inspector stores up to 1 MB of each body. A delivery with a larger body is marked truncated and has to be edited before it can be replayed.</p>
+</section>
+</article>
+{{template "sitefoot" .}}{{end}}

@@ -1,0 +1,25 @@
+<!-- OWNER: review before launch -->
+{{define "aup"}}{{template "sitehead" .}}
+<article class="wrap narrow doc legal">
+<h1>Acceptable use policy</h1>
+<p class="note">This policy is a starting template and may change before launch.</p>
+<p>Passway tunnels are for developing and testing your own software. This policy, set by {{.Operator}}, applies to everything served through the hosted service at {{.Host}}, and it is part of the <a href="/terms">terms of service</a>.</p>
+
+<h2>You must not use Passway for</h2>
+<ul>
+<li><strong>Phishing:</strong> pages that imitate another organisation or person to collect passwords, payment details or other personal data.</li>
+<li><strong>Malware:</strong> distributing viruses, ransomware, spyware or other harmful code, or running command-and-control servers.</li>
+<li><strong>Illegal content:</strong> content that is illegal where it is served or received, including child sexual abuse material, which we report to the authorities.</li>
+<li><strong>Spam:</strong> sending or supporting unsolicited bulk messages, or hosting pages advertised that way.</li>
+<li>Infringing other people's copyright, trademarks or other rights.</li>
+<li>Attacking, scanning or overloading other systems, or getting around the limits of your plan.</li>
+<li>Impersonating Passway or using subdomains to mislead visitors.</li>
+</ul>
+
+<h2>What we do</h2>
+<p>We block subdomains that contain well-known brand names, show a warning page to browser visitors of Free tunnels, and review reports. When we believe a tunnel breaks this policy, we may close it, block its subdomain or domain, and suspend the account, without notice. We may share information with the authorities where the law requires it.</p>
+
+<h2>Reporting abuse</h2>
+<p>Use the <a href="/abuse">abuse form</a> or email <a href="mailto:{{.AbuseEmail}}">{{.AbuseEmail}}</a> with the full URL and what you found.</p>
+</article>
+{{template "sitefoot" .}}{{end}}

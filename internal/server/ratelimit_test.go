@@ -75,3 +75,29 @@ func TestAllowNPerKey(t *testing.T) {
 		t.Fatal("b sixth allowed")
 	}
 }
+
+func TestRateLimiterWindow(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	l := NewRateLimiterWindow(5, time.Hour)
+	l.now = func() time.Time { return now }
+	l.lastSweep = now
+	for i := 0; i < 5; i++ {
+		if ok, _ := l.Allow("abuse:ip"); !ok {
+			t.Fatalf("allow %d denied", i)
+		}
+	}
+	ok, retry := l.Allow("abuse:ip")
+	if ok {
+		t.Fatal("6th allowed")
+	}
+	if retry < 11*time.Minute || retry > 12*time.Minute {
+		t.Fatalf("retryAfter = %v, want about 12m", retry)
+	}
+	now = now.Add(12 * time.Minute)
+	if ok, _ := l.Allow("abuse:ip"); !ok {
+		t.Fatal("not allowed after one refill")
+	}
+	if ok, _ := l.Allow("abuse:ip"); ok {
+		t.Fatal("allowed twice after one refill")
+	}
+}

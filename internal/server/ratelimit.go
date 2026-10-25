@@ -15,10 +15,12 @@ type bucket struct {
 	last   time.Time
 }
 
-// RateLimiter is a token bucket per key: capacity = perMinute, refill perMinute/60 per second.
+// RateLimiter is a token bucket per key: capacity = n, refill n per period
+// (a minute unless made with NewRateLimiterWindow).
 type RateLimiter struct {
 	mu        sync.Mutex
-	perMinute int
+	perMinute int // the default n
+	period    time.Duration
 	now       func() time.Time
 	buckets   map[string]*bucket
 	lastSweep time.Time
@@ -26,8 +28,15 @@ type RateLimiter struct {
 
 // NewRateLimiter returns a limiter allowing perMinute requests per key per minute.
 func NewRateLimiter(perMinute int) *RateLimiter {
+	return NewRateLimiterWindow(perMinute, time.Minute)
+}
+
+// NewRateLimiterWindow returns a limiter allowing a burst of n requests per
+// key, refilled at n per period, e.g. 5 per hour.
+func NewRateLimiterWindow(n int, period time.Duration) *RateLimiter {
 	return &RateLimiter{
-		perMinute: perMinute,
+		perMinute: n,
+		period:    period,
 		now:       time.Now,
 		buckets:   make(map[string]*bucket),
 		lastSweep: time.Now(),
@@ -41,13 +50,13 @@ func (l *RateLimiter) Allow(key string) (ok bool, retryAfter time.Duration) {
 }
 
 // AllowN is Allow with a per-key rate: perMinute is the capacity and refill
-// for key's bucket.
+// for key's bucket, per minute (or per the limiter's period).
 func (l *RateLimiter) AllowN(key string, perMinute int) (ok bool, retryAfter time.Duration) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
 	capacity := float64(perMinute)
-	rate := capacity / 60 // tokens per second
+	rate := capacity / l.period.Seconds() // tokens per second
 
 	if now.Sub(l.lastSweep) >= sweepEvery {
 		l.lastSweep = now

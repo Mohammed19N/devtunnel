@@ -168,3 +168,19 @@ func TestStripeErrorMessage(t *testing.T) {
 		t.Fatal("no error for a session without url")
 	}
 }
+
+func TestPriceDecimal(t *testing.T) {
+	for _, c := range []struct {
+		p    Price
+		want string
+	}{
+		{Price{Currency: "usd", UnitAmount: 700}, "7.00"},
+		{Price{Currency: "eur", UnitAmount: 750}, "7.50"},
+		{Price{Currency: "USD", UnitAmount: 5}, "0.05"},
+		{Price{Currency: "jpy", UnitAmount: 1000}, "1000"},
+	} {
+		if got := c.p.Decimal(); got != c.want {
+			t.Errorf("%+v: Decimal() = %q, want %q", c.p, got, c.want)
+		}
+	}
+}

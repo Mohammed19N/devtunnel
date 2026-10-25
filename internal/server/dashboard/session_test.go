@@ -52,7 +52,7 @@ func TestSessionCookieHostPrefixOnHTTPS(t *testing.T) {
 	if hw := e.do("GET", "/", nil, tossed); hw.Code != http.StatusOK || !strings.Contains(hw.Body.String(), "Sign in with GitHub") {
 		t.Errorf("unprefixed cookie accepted on https: %d %q", hw.Code, hw.Header().Get("Location"))
 	}
-	if hw := e.do("GET", "/", nil, sc); hw.Code != http.StatusSeeOther || hw.Header().Get("Location") != "/dashboard" {
+	if hw := e.do("GET", "/", nil, sc); hw.Code != http.StatusOK || !strings.Contains(hw.Body.String(), "Open dashboard") {
 		t.Errorf("signed-in home = %d %q", hw.Code, hw.Header().Get("Location"))
 	}
 }
@@ -161,6 +161,9 @@ func TestSecurityHeaders(t *testing.T) {
 	} {
 		w := e.do(rq.method, rq.path, nil)
 		for k, v := range want {
+			if (k == "Cache-Control" || k == "Content-Security-Policy") && rq.path == "/" {
+				continue // the public home page is cacheable and allows connect-src 'self' (TestHomeAnonymousCacheable)
+			}
 			if got := w.Header().Get(k); got != v {
 				t.Errorf("%s %s: %s = %q, want %q", rq.method, rq.path, k, got, v)
 			}

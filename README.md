@@ -164,6 +164,9 @@ Owner to-dos before a public launch:
 | `--free-signup-cap` | `1000` | Free accounts allowed; later signups are waitlisted. A waitlisted user is admitted at their next sign-in once there is room, or by an operator with `passway-server admin --db PATH admit <login>`. |
 | `--free-bandwidth-cap` | `500 GiB` | Monthly bandwidth across all Free accounts, in bytes. |
 | `--dev-login` | `false` | Passwordless dev sign-in (localhost only). |
+| `--legal-operator` | (empty) | Who runs the service, named on `/terms`, `/privacy` and `/aup` (empty renders "the operator of this service"). |
+| `--legal-jurisdiction` | (empty) | Whose laws govern the terms of service, e.g. `England and Wales`. |
+| `--abuse-email` | `abuse@<base host>` | Abuse contact shown on the site. Reports from `/abuse` are stored in the database and logged at WARN. |
 
 ## Running your own relay
 

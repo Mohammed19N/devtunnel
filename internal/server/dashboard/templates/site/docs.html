@@ -1,0 +1,91 @@
+{{define "docs"}}{{template "sitehead" .}}
+<article class="wrap narrow doc">
+<h1>Passway docs</h1>
+<p class="lede">Install the CLI, open a tunnel to a local port and watch the traffic in the inspector. For receiving webhooks from a provider, see <a href="/docs/webhooks">debugging Stripe, GitHub and Shopify webhooks</a>.</p>
+
+<nav class="toc" aria-label="On this page">
+<a href="#quickstart">Quickstart</a>
+<a href="#inspector">Inspector</a>
+<a href="#cli">CLI reference</a>
+<a href="#warning">Browser warning page</a>
+<a href="#domains">Custom domains</a>
+<a href="#self-hosting">Self-hosting</a>
+</nav>
+
+<section id="quickstart">
+<h2>Quickstart</h2>
+<h3>1. Install the CLI</h3>
+<p>On Linux and macOS:</p>
+<pre><code>{{.InstallCmd}}</code></pre>
+<p>Or with Homebrew:</p>
+<pre><code>brew install mohammed19n/tap/passway</code></pre>
+<p>Windows builds and checksums are on the <a href="{{.RepoURL}}/releases">releases page</a>.</p>
+<h3>2. Sign in and create a token</h3>
+<p><a href="/login">Sign in with your GitHub account</a>, open <strong>CLI tokens</strong> in the dashboard and create a token. It is shown only once. Save it on your machine:</p>
+<pre><code>passway login &lt;token&gt;</code></pre>
+<h3>3. Open a tunnel</h3>
+<p>Start your app, then point Passway at its port:</p>
+<pre><code>passway http 3000</code></pre>
+<p>The CLI prints your public HTTPS URL and the inspector address. Requests to the URL reach <code>localhost:3000</code> until you stop the CLI with Ctrl+C. If the connection drops, the CLI reconnects and keeps the same URL.</p>
+</section>
+
+<section id="inspector">
+<h2>Inspector</h2>
+<p>While a tunnel is open, the inspector runs at <a href="http://localhost:4040">http://localhost:4040</a>. If that port is taken, the CLI tries 4041 to 4049 and prints the address it chose. It listens on loopback only, and the captured data never leaves your machine.</p>
+<ul>
+<li><strong>Live list:</strong> every request with its method, path, status and timing, and the full headers and body of the request and the response.</li>
+<li><strong>Replay</strong> sends a captured request to your local app again, byte for byte, including signature headers such as <code>Stripe-Signature</code>.</li>
+<li><strong>Edit &amp; Replay</strong> lets you change the method, path, headers or body first.</li>
+<li><strong>Copy as cURL</strong> builds a <code>curl</code> command for the request against your public URL.</li>
+</ul>
+<p>The inspector keeps the last 500 requests in memory and stores at most 1 MB of each body. Larger bodies are still forwarded in full; only the stored copy is truncated.</p>
+</section>
+
+<section id="cli">
+<h2>CLI reference</h2>
+<div class="scroll">
+<table>
+<thead><tr><th scope="col">Command</th><th scope="col">What it does</th></tr></thead>
+<tbody>
+<tr><td><code>passway http &lt;port|host:port|url&gt;</code></td><td>Opens a tunnel to a local HTTP server and starts the inspector.</td></tr>
+<tr><td><code>passway login &lt;token&gt;</code></td><td>Saves a token from the dashboard to the config file.</td></tr>
+<tr><td><code>passway version</code></td><td>Prints the CLI version.</td></tr>
+</tbody>
+</table>
+</div>
+<h3>Flags for <code>passway http</code></h3>
+<div class="scroll">
+<table>
+<thead><tr><th scope="col">Flag</th><th scope="col">Default</th><th scope="col">Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>--name N</code></td><td>your default subdomain</td><td>Use one of your reserved subdomains.</td></tr>
+<tr><td><code>--domain D</code></td><td></td><td>Serve on a verified custom domain (Pro).</td></tr>
+<tr><td><code>--server URL</code></td><td>the hosted service</td><td>The Passway server to connect to, for example your own.</td></tr>
+<tr><td><code>--host-header</code></td><td><code>preserve</code></td><td><code>preserve</code> forwards the public Host header; <code>rewrite</code> sets it to the local target.</td></tr>
+<tr><td><code>--inspect</code></td><td><code>true</code></td><td>Run the inspector. <code>--inspect=false</code> turns it off.</td></tr>
+<tr><td><code>--inspect-addr</code></td><td><code>127.0.0.1:4040</code></td><td>Inspector listen address. Must be a loopback address.</td></tr>
+<tr><td><code>--insecure</code></td><td><code>false</code></td><td>Skip TLS verification of the server. For development only.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The token can also come from the <code>PASSWAY_TOKEN</code> environment variable.</p>
+</section>
+
+<section id="warning">
+<h2>Browser warning page</h2>
+<p>On the Free plan, someone who opens your tunnel in a browser first sees a page that names the tunnel's owner. After they continue, the browser is not asked again for that tunnel. Requests that are not browser page loads, such as webhooks, API calls and <code>curl</code>, are not affected. To skip the page in your own browser testing, send the <code>Passway-Skip-Warning</code> header. Pro tunnels have no warning page.</p>
+</section>
+
+<section id="domains">
+<h2>Custom domains</h2>
+<p>On Pro, add a domain under <strong>Custom domains</strong> in the dashboard, create the DNS records it shows (a CNAME to <code>{{.EdgeHost}}</code> and a TXT record for verification), then verify it. Once verified:</p>
+<pre><code>passway http 3000 --domain app.example.com</code></pre>
+<p>The certificate for the domain is issued automatically on the first request.</p>
+</section>
+
+<section id="self-hosting">
+<h2>Self-hosting</h2>
+<p>The server is a single binary, also published as the Docker image <code>ghcr.io/mohammed19n/passway-server</code>. It needs a domain with wildcard DNS and a wildcard TLS certificate. The <a href="{{.RepoURL}}/blob/main/docs/self-hosting.md">self-hosting guide</a> covers DNS, TLS, flags and admin commands. Point the CLI at your server with <code>--server https://your-domain</code>.</p>
+</section>
+</article>
+{{template "sitefoot" .}}{{end}}

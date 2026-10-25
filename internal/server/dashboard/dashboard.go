@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mohammed19n/passway/internal/server"
 	"github.com/mohammed19n/passway/internal/server/billing"
 	"github.com/mohammed19n/passway/internal/server/store"
 )
@@ -61,6 +62,12 @@ type Config struct {
 	Disconnect func(accountID string, tokenID int64)
 	Now        func() time.Time // nil = time.Now
 	Logger     *slog.Logger     // nil = slog.Default()
+
+	// LegalOperator and LegalJurisdiction fill the legal pages; empty values
+	// render "the operator of this service".
+	LegalOperator, LegalJurisdiction string
+	AbuseEmail                       string // "" = "abuse@<BaseURL host>"
+	RepoURL                          string // "" = "https://github.com/mohammed19n/passway"
 }
 
 // TunnelInfo describes one live tunnel.
@@ -82,17 +89,21 @@ type Dashboard struct {
 	client        *http.Client
 	mux           *http.ServeMux
 	postRoutes    []string // paths of every POST route, for tests
+	abuseLimiter  *server.RateLimiter
 }
 
-//go:embed templates/*.html
+//go:embed templates/*.html templates/site/*.html
 var templateFS embed.FS
 
-//go:embed static/app.css
-var appCSS []byte
-
-var tmpl = template.Must(template.ParseFS(templateFS, "templates/*.html"))
+var tmpl = template.Must(template.New("").Funcs(template.FuncMap{"asset": assetURL}).
+	ParseFS(templateFS, "templates/*.html", "templates/site/*.html"))
 
 const csp = "default-src 'none'; style-src 'self'; img-src 'self' https://avatars.githubusercontent.com; form-action 'self' https://github.com https://checkout.stripe.com https://billing.stripe.com; frame-ancestors 'none'; base-uri 'none'"
+
+// siteCSP is csp plus connect-src 'self' for the public pages, so tools such
+// as Lighthouse can fetch /robots.txt from the page. No script can run on
+// either: script-src falls back to default-src 'none'.
+const siteCSP = csp + "; connect-src 'self'"
 
 // New validates cfg, applies defaults and returns a Dashboard.
 func New(cfg Config) (*Dashboard, error) {
@@ -164,6 +175,13 @@ func New(cfg Config) (*Dashboard, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	if cfg.AbuseEmail == "" {
+		cfg.AbuseEmail = "abuse@" + host
+	}
+	cfg.RepoURL = strings.TrimSuffix(cfg.RepoURL, "/")
+	if cfg.RepoURL == "" {
+		cfg.RepoURL = "https://github.com/mohammed19n/passway"
+	}
 
 	d := &Dashboard{
 		cfg:           cfg,
@@ -175,6 +193,7 @@ func New(cfg Config) (*Dashboard, error) {
 		stateCookie:   "passway_oauth_state",
 		client:        &http.Client{Timeout: 10 * time.Second},
 		mux:           http.NewServeMux(),
+		abuseLimiter:  server.NewRateLimiterWindow(abusePerHour, time.Hour),
 	}
 	if d.secure {
 		d.sessionCookie = "__Host-" + d.sessionCookie
@@ -186,7 +205,7 @@ func New(cfg Config) (*Dashboard, error) {
 
 func (d *Dashboard) routes() {
 	m := d.mux
-	m.HandleFunc("GET /{$}", d.handleHome)
+	d.siteRoutes()
 	m.HandleFunc("GET /login", d.handleLogin)
 	m.HandleFunc("GET /auth/github/callback", d.handleCallback)
 	if d.cfg.DevLogin {
@@ -212,10 +231,6 @@ func (d *Dashboard) routes() {
 		m.HandleFunc("POST /stripe/webhook", d.handleStripeWebhook)
 	}
 	m.HandleFunc("GET /waitlist", d.page(d.handleWaitlist))
-	m.HandleFunc("GET /static/app.css", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		_, _ = w.Write(appCSS)
-	})
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		d.fail(w, http.StatusNotFound, "There's nothing here.")
 	})
@@ -228,8 +243,12 @@ func (d *Dashboard) handlePost(path string, h func(http.ResponseWriter, *http.Re
 	d.mux.HandleFunc("POST "+path, d.post(h))
 }
 
-// ServeHTTP sets the security headers and dispatches to the routes.
+// ServeHTTP sets the security headers, gzips text responses and dispatches
+// to the routes.
 func (d *Dashboard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	gw := newGzipWriter(w, r)
+	defer gw.close()
+	w = gw
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Frame-Options", "DENY")
@@ -248,6 +267,17 @@ type view struct {
 	CSRF    string      // the session's CSRF token for POST forms
 	Message string      // error page text
 	Wide    bool        // account pages use the wide layout
+	RepoURL string      // the footer's GitHub link
+
+	// Public site pages (SEO set = indexable site layout, nil = noindex).
+	SEO          *seo
+	InstallCmd   string
+	Free, Pro    planCard
+	Operator     string
+	Jurisdiction string
+	AbuseEmail   string
+	Abuse        abuseFormState
+	Sent         bool // ?sent=1 after an abuse report
 
 	// Account pages.
 	Error       string // inline form error
@@ -274,6 +304,7 @@ type view struct {
 
 // render executes the named template into a buffer and writes it with status.
 func (d *Dashboard) render(w http.ResponseWriter, status int, name string, v view) {
+	v.RepoURL = d.cfg.RepoURL
 	var buf bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&buf, name, v); err != nil {
 		d.log.Error("dashboard: render", "template", name, "err", err)
@@ -293,19 +324,6 @@ func (d *Dashboard) fail(w http.ResponseWriter, status int, msg string) {
 func (d *Dashboard) internalError(w http.ResponseWriter, what string, err error) {
 	d.log.Error("dashboard: "+what, "err", err)
 	d.fail(w, http.StatusInternalServerError, "Something went wrong on our side. Please try again.")
-}
-
-func (d *Dashboard) handleHome(w http.ResponseWriter, r *http.Request) {
-	s, err := d.currentSession(w, r)
-	if err != nil {
-		d.internalError(w, "session", err)
-		return
-	}
-	if s != nil {
-		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
-		return
-	}
-	d.render(w, http.StatusOK, "home", view{Title: "Sign in"})
 }
 
 func (d *Dashboard) handleWaitlist(w http.ResponseWriter, r *http.Request, s *session) {

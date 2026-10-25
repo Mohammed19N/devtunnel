@@ -1,0 +1,42 @@
+<!-- OWNER: review before launch -->
+{{define "privacy"}}{{template "sitehead" .}}
+<article class="wrap narrow doc legal">
+<h1>Privacy policy</h1>
+<p class="note">This policy is a starting template and may change before launch.</p>
+
+<h2>Who is responsible</h2>
+<p>The hosted Passway service at {{.Host}} is run by {{.Operator}}, who is responsible for the personal data described here. Passway software that you run on your own server sends nothing to us.</p>
+
+<h2>What we keep</h2>
+<ul>
+<li><strong>Your GitHub profile:</strong> when you sign in we read your public GitHub profile and keep your numeric GitHub ID, login, display name and avatar URL. We also check when your GitHub account was created, to turn away brand-new accounts used for abuse, but we do not store that date. We do not ask for access to your repositories or your email address.</li>
+<li><strong>Account data:</strong> your plan, your reserved subdomains, your custom domains and a log of account actions such as creating a token.</li>
+<li><strong>CLI tokens:</strong> stored only as a SHA-256 hash, plus a short prefix and the name you gave it so you can tell them apart. We cannot show a token again after it is created.</li>
+<li><strong>Usage:</strong> the number of bytes your tunnels transfer each month, to apply your plan's bandwidth limit.</li>
+<li><strong>Request metadata in server logs:</strong> for traffic through the service, our logs may contain IP addresses, hostnames, request paths, status codes and times, and record when your tunnels connect and disconnect. We use them to run the service, investigate abuse and fix problems. We do not log request or response bodies.</li>
+<li><strong>Billing:</strong> if you subscribe to Pro, Stripe processes your payment. We keep your Stripe customer and subscription IDs and the subscription status. We never see or store your card details.</li>
+<li><strong>Abuse reports:</strong> the reported URL, the details you write, your email address if you give one, and your IP address.</li>
+</ul>
+
+<h2>What stays on your machine</h2>
+<p>The request inspector runs inside the Passway CLI on your computer. The requests and responses it captures are kept in memory there and are never sent to us.</p>
+
+<h2>Cookies</h2>
+<p>The dashboard sets a session cookie when you sign in and a short-lived cookie during GitHub sign-in. Tunnels on the Free plan set a cookie in visitors' browsers to remember that they saw the warning page. We do not use advertising or analytics cookies.</p>
+
+<h2>Why we use it</h2>
+<p>To provide the service you asked for (your account, tunnels and billing), to keep it secure and stop abuse, and to meet legal obligations. Where the law requires a legal basis, these are performance of our contract with you, our legitimate interest in running a secure service, and legal obligation.</p>
+
+<h2>Who we share it with</h2>
+<p>GitHub, for sign-in; Stripe, for payments; and our hosting provider, which runs the servers. We may disclose data when the law requires it or to act on abuse. We do not sell personal data.</p>
+
+<h2>How long we keep it</h2>
+<p>Account data is kept while your account exists and deleted when you ask us to close it, except where we must keep it longer, such as billing records for tax purposes or records of abuse. Server logs are kept for a limited period and then deleted.</p>
+
+<h2>Your rights</h2>
+<p>Depending on where you live, you can ask to see, correct, export or delete your personal data, or object to how we use it, and you can complain to your data protection authority. To make a request, contact {{.Operator}} at <a href="mailto:{{.AbuseEmail}}">{{.AbuseEmail}}</a>.</p>
+
+<h2>Changes</h2>
+<p>We will post changes to this policy on this page.</p>
+</article>
+{{template "sitefoot" .}}{{end}}

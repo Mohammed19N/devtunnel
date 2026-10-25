@@ -1,0 +1,53 @@
+{{define "pricing"}}{{template "sitehead" .}}
+<section class="wrap narrow">
+<h1>Pricing</h1>
+<p class="lede">Start on Free with your GitHub account. Pro raises the limits and removes the browser warning page. Running your own server costs nothing: the server is open source.</p>
+</section>
+
+<section class="wrap" aria-label="Plans">
+<div class="grid2">
+<div class="plan">
+<h2>Free</h2>
+<p class="price">{{.Free.Price}}</p>
+<p>For trying things out and debugging webhooks now and then.</p>
+{{if .User}}<a class="btn" href="/dashboard">Open dashboard</a>{{else}}<a class="btn" href="/login">{{template "github-icon"}}Sign in with GitHub</a>{{end}}
+</div>
+<div class="plan pro">
+<h2>Pro</h2>
+<p class="price">{{.Pro.Price}}</p>
+<p>For daily use, several tunnels at once and your own domains.</p>
+{{if .Billing}}{{if .User}}<a class="btn" href="/dashboard">Upgrade in the dashboard</a>{{else}}<a class="btn" href="/login">Sign in to upgrade</a>{{end}}{{else}}<button class="btn" type="button" disabled>Available later</button>{{end}}
+</div>
+</div>
+</section>
+
+<section class="wrap narrow" aria-labelledby="compare">
+<h2 id="compare">Compare plans</h2>
+<div class="scroll">
+<table class="compare">
+<thead><tr><th scope="col">Limit</th><th scope="col">Free</th><th scope="col">Pro</th></tr></thead>
+<tbody>
+<tr><th scope="row">Concurrent tunnels</th><td>{{.Free.Tunnels}}</td><td>{{.Pro.Tunnels}}</td></tr>
+<tr><th scope="row">Reserved subdomains</th><td>{{.Free.Subdomains}}</td><td>{{.Pro.Subdomains}}</td></tr>
+<tr><th scope="row">Bandwidth per month</th><td>{{.Free.Bandwidth}}</td><td>{{.Pro.Bandwidth}}</td></tr>
+<tr><th scope="row">Requests per minute per tunnel</th><td>{{.Free.Rate}}</td><td>{{.Pro.Rate}}</td></tr>
+<tr><th scope="row">Custom domains</th><td>{{.Free.CustomDomains}}</td><td>{{.Pro.CustomDomains}}</td></tr>
+<tr><th scope="row">Browser warning page</th><td>{{if .Free.Warning}}Yes{{else}}No{{end}}</td><td>{{if .Pro.Warning}}Yes{{else}}No{{end}}</td></tr>
+<tr><th scope="row">"Served by Passway" footer on warning and error pages</th><td>{{if .Free.Branding}}Yes{{else}}No{{end}}</td><td>{{if .Pro.Branding}}Yes{{else}}No{{end}}</td></tr>
+<tr><th scope="row">Request inspector, replay, copy as cURL</th><td>Yes</td><td>Yes</td></tr>
+<tr><th scope="row">Price</th><td>{{.Free.Price}}</td><td>{{.Pro.Price}}</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section class="wrap narrow faq" aria-labelledby="faq">
+<h2 id="faq">Questions</h2>
+<h3>What is the browser warning page?</h3>
+<p>On Free, a visitor who opens your tunnel in a browser first sees a page that names the tunnel's owner and asks them to continue. It helps stop phishing on shared domains. Webhooks, API clients and <code>curl</code> are not browsers, so their requests reach your app directly.</p>
+<h3>What counts as bandwidth?</h3>
+<p>The bytes of requests and responses that pass through your tunnels in a calendar month (UTC). When you reach the limit, your tunnels stop serving until the next month or until you upgrade.</p>
+<h3>Can I run Passway without an account?</h3>
+<p>Yes. Run your own server and none of these limits apply. See the <a href="{{.RepoURL}}/blob/main/docs/self-hosting.md">self-hosting guide</a>.</p>
+</section>
+{{template "sitefoot" .}}{{end}}

@@ -1,0 +1,27 @@
+{{define "abuse"}}{{template "sitehead" .}}
+<article class="wrap narrow doc">
+<h1>Report abuse</h1>
+{{if .Sent}}
+<div class="notice" role="status">
+<p><strong>Thank you, your report was sent.</strong> If you gave an email address, we may contact you about it.</p>
+</div>
+{{end}}
+<p>If a Passway URL hosts phishing, malware, spam or anything else that breaks the <a href="/aup">acceptable use policy</a>, tell us here or email <a href="mailto:{{.AbuseEmail}}">{{.AbuseEmail}}</a>. Include the full URL so we can find the tunnel.</p>
+<form class="form" method="post" action="/abuse">
+{{with .Abuse.Error}}<p class="error" role="alert">{{.}}</p>{{end}}
+<label for="url">URL</label>
+<input id="url" name="url" type="url" required maxlength="2048" placeholder="https://name.{{.Host}}/page" value="{{.Abuse.URL}}">
+<label for="category">Category</label>
+<select id="category" name="category" required>
+{{range .Abuse.Categories}}<option value="{{.Value}}"{{if eq .Value $.Abuse.Category}} selected{{end}}>{{.Label}}</option>
+{{end}}</select>
+<label for="details">What did you find?</label>
+<textarea id="details" name="details" required maxlength="5000" rows="6">{{.Abuse.Details}}</textarea>
+<label for="email">Your email <span class="opt">(optional)</span></label>
+<input id="email" name="email" type="email" maxlength="254" autocomplete="email" value="{{.Abuse.Email}}">
+<div class="hp" aria-hidden="true"><label for="website">Leave this empty</label><input id="website" name="website" type="text" tabindex="-1" autocomplete="off"></div>
+<button class="btn" type="submit">Send report</button>
+</form>
+<p class="note">We store the report and your IP address to handle it and to stop misuse of this form. See the <a href="/privacy">privacy policy</a>.</p>
+</article>
+{{template "sitefoot" .}}{{end}}
