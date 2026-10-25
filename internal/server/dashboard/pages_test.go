@@ -82,7 +82,7 @@ func TestDashboardShowsTunnelsAndUsage(t *testing.T) {
 		t.Errorf("Tunnels called with %q", gotID)
 	}
 	for _, want := range []string{
-		"go install github.com/mohammed19n/passway/cmd/passway@latest", "passway login",
+		"/install.sh | sh", "passway login",
 		"https://swift-fox-1.passway.test", "0.3.1", "5 minutes ago", "1234",
 		"Free", "300 MB of 1 GB", "<progress", "Upgrade to Pro", "disabled", "Coming soon",
 		"Reserved subdomains", `href="/dashboard/tokens"`,
@@ -608,5 +608,25 @@ func TestClaimFormHiddenAtLimit(t *testing.T) {
 	body = e.do("GET", "/dashboard/subdomains", nil, sc).Body.String()
 	if !strings.Contains(body, "You've used all 5 reserved subdomains") || strings.Contains(body, claimFormAction) {
 		t.Fatalf("pro user at limit: claim form shown or note missing:\n%s", body)
+	}
+}
+
+// Getting started must install a release build, whose default server is
+// this service; a go install build points at localhost (review I2).
+func TestDashboardGettingStartedInstallsRelease(t *testing.T) {
+	e := newTestEnv(t, nil)
+	sc, _ := e.signedIn(t)
+	body := e.do("GET", "/dashboard", nil, sc).Body.String()
+	for _, want := range []string{
+		"curl -fsSL " + testBaseURL + "/install.sh | sh",
+		"brew install mohammed19n/tap/passway",
+		"passway login &lt;token&gt;",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "go install") {
+		t.Error("dashboard still says go install")
 	}
 }

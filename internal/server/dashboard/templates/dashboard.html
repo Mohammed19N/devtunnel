@@ -3,9 +3,11 @@
 
 <section>
 <h2>Getting started</h2>
-<p>Install the CLI, then sign in with a token from <a href="/dashboard/tokens">CLI tokens</a>.</p>
-<pre><code>go install github.com/mohammed19n/passway/cmd/passway@latest
+<p>Install the CLI (Linux and macOS), then sign in with a token from <a href="/dashboard/tokens">CLI tokens</a>.</p>
+<pre><code>curl -fsSL {{.BaseURL}}/install.sh | sh
 passway login &lt;token&gt;</code></pre>
+<p>Or with Homebrew:</p>
+<pre><code>brew install mohammed19n/tap/passway</code></pre>
 </section>
 
 <section>
