@@ -130,7 +130,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	rateLimit := fs.Int("rate-limit", 0, "max requests per minute per tunnel (0 = unlimited)")
 	mode := fs.String("mode", envOr("PASSWAY_MODE", "self-hosted"), "cloud or self-hosted (default $PASSWAY_MODE, else self-hosted)")
 	blockWords := fs.Bool("block-words", false, "refuse subdomains containing phishing-prone words")
-	proxyProto := fs.Bool("proxy-protocol", false, "require a PROXY protocol v2 header on TLS connections (behind nginx stream passthrough)")
+	proxyProto := fs.Bool("proxy-protocol", false, "require a PROXY protocol header (v1 or v2) on TLS connections (behind nginx stream passthrough)")
 	cf := cloudFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {

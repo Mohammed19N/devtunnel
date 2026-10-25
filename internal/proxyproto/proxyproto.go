@@ -1,6 +1,6 @@
-// Package proxyproto parses the HAProxy PROXY protocol v2 header so a server
-// behind a TCP passthrough proxy (for example nginx stream) sees real client
-// addresses.
+// Package proxyproto parses the HAProxy PROXY protocol header (v2 binary, or
+// the v1 text form that nginx's stream proxy_protocol sends) so a server
+// behind a TCP passthrough proxy sees real client addresses.
 package proxyproto
 
 import (
@@ -10,18 +10,20 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
 
-// ErrNoHeader is returned when a connection does not start with a valid PROXY v2 header.
-var ErrNoHeader = errors.New("proxyproto: missing or invalid PROXY v2 header")
+// ErrNoHeader is returned when a connection does not start with a valid PROXY header.
+var ErrNoHeader = errors.New("proxyproto: missing or invalid PROXY header")
 
 const maxLen = 4096
 
 var signature = []byte("\r\n\r\n\x00\r\nQUIT\n")
 
-// NewListener wraps ln so each accepted conn must start with a PROXY v2 header.
+// NewListener wraps ln so each accepted conn must start with a PROXY v1 or v2 header.
 // The header is parsed lazily on the first Read or RemoteAddr call (in the
 // connection's own goroutine, never in Accept), with a read deadline of timeout.
 func NewListener(ln net.Listener, timeout time.Duration) net.Listener {
@@ -83,7 +85,13 @@ func (c *conn) RemoteAddr() net.Addr {
 // source address, or nil to keep the socket address.
 func readHeader(r io.Reader) (net.Addr, error) {
 	var fixed [16]byte
-	if _, err := io.ReadFull(r, fixed[:]); err != nil {
+	if _, err := io.ReadFull(r, fixed[:1]); err != nil {
+		return nil, err
+	}
+	if fixed[0] == 'P' {
+		return readV1(r)
+	}
+	if _, err := io.ReadFull(r, fixed[1:]); err != nil {
 		return nil, err
 	}
 	if !bytes.Equal(fixed[:12], signature) || fixed[12]>>4 != 2 {
@@ -122,4 +130,58 @@ func readHeader(r io.Reader) (net.Addr, error) {
 		return net.TCPAddrFromAddrPort(netip.AddrPortFrom(ip, binary.BigEndian.Uint16(body[32:34]))), nil
 	}
 	return nil, nil // UNSPEC or unknown family
+}
+
+// maxV1 is the longest valid v1 header, CRLF included.
+const maxV1 = 107
+
+// readV1 reads the rest of a v1 text header ("PROXY TCP4 <src> <dst> <sport>
+// <dport>\r\n", after its first byte) one byte at a time, so nothing past the
+// header is consumed.
+func readV1(r io.Reader) (net.Addr, error) {
+	line := []byte{'P'}
+	var b [1]byte
+	for !bytes.HasSuffix(line, []byte("\r\n")) {
+		if len(line) >= maxV1 {
+			return nil, ErrNoHeader
+		}
+		if _, err := io.ReadFull(r, b[:]); err != nil {
+			return nil, err
+		}
+		line = append(line, b[0])
+	}
+	f := strings.Split(string(line[:len(line)-2]), " ")
+	if len(f) < 2 || f[0] != "PROXY" {
+		return nil, ErrNoHeader
+	}
+	if f[1] == "UNKNOWN" {
+		return nil, nil // the receiver must ignore the rest of the line
+	}
+	if len(f) != 6 || (f[1] != "TCP4" && f[1] != "TCP6") {
+		return nil, ErrNoHeader
+	}
+	src, err := netip.ParseAddr(f[2])
+	if err != nil || src.Zone() != "" || src.Is4() != (f[1] == "TCP4") {
+		return nil, ErrNoHeader
+	}
+	if dst, err := netip.ParseAddr(f[3]); err != nil || dst.Is4() != src.Is4() {
+		return nil, ErrNoHeader
+	}
+	sport, ok := v1Port(f[4])
+	if _, ok2 := v1Port(f[5]); !ok || !ok2 {
+		return nil, ErrNoHeader
+	}
+	return net.TCPAddrFromAddrPort(netip.AddrPortFrom(src, sport)), nil
+}
+
+// v1Port parses a v1 port: plain decimal digits, 0-65535.
+func v1Port(s string) (uint16, bool) {
+	if s == "" || len(s) > 5 || strings.Trim(s, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n > 65535 {
+		return 0, false
+	}
+	return uint16(n), true
 }

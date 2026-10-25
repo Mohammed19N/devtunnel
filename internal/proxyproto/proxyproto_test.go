@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -142,10 +143,55 @@ func TestNoHeaderClosed(t *testing.T) {
 	}
 }
 
-func TestProxyV1Rejected(t *testing.T) {
-	srv, _ := serve(t, time.Second, []byte("PROXY TCP4 203.0.113.7 10.0.0.1 4321 443\r\nGET / HTTP/1.1\r\n\r\n"))
-	if _, err := srv.Read(make([]byte, 10)); !errors.Is(err, ErrNoHeader) {
-		t.Fatalf("Read err = %v, want ErrNoHeader", err)
+// nginx's stream proxy_protocol sends the v1 text header (checked against
+// nginx 1.27: "PROXY TCP4 127.0.0.1 127.0.0.1 60138 19000\r\n").
+func TestProxyV1TCP4(t *testing.T) {
+	srv, _ := serve(t, time.Second, []byte("PROXY TCP4 203.0.113.7 10.0.0.1 4321 443\r\nhello"))
+	if got := srv.RemoteAddr().String(); got != "203.0.113.7:4321" {
+		t.Fatalf("RemoteAddr = %s", got)
+	}
+	if got := readN(t, srv, 5); got != "hello" {
+		t.Fatalf("payload = %q", got)
+	}
+}
+
+func TestProxyV1TCP6(t *testing.T) {
+	srv, _ := serve(t, time.Second, []byte("PROXY TCP6 2001:db8::7 2001:db8::1 4321 443\r\nhello"))
+	if got := readN(t, srv, 5); got != "hello" {
+		t.Fatalf("payload = %q", got)
+	}
+	if got := srv.RemoteAddr().String(); got != "[2001:db8::7]:4321" {
+		t.Fatalf("RemoteAddr = %s", got)
+	}
+}
+
+func TestProxyV1Unknown(t *testing.T) {
+	srv, cli := serve(t, time.Second, []byte("PROXY UNKNOWN ffff::1 ffff::2 1 2\r\nhi"))
+	if got, want := srv.RemoteAddr().String(), cli.LocalAddr().String(); got != want {
+		t.Fatalf("RemoteAddr = %s, want %s", got, want)
+	}
+	if got := readN(t, srv, 2); got != "hi" {
+		t.Fatalf("payload = %q", got)
+	}
+}
+
+func TestProxyV1Malformed(t *testing.T) {
+	for _, h := range []string{
+		"PROXY TCP4 203.0.113.7 10.0.0.1 4321\r\n",        // missing a field
+		"PROXY TCP4 2001:db8::7 10.0.0.1 4321 443\r\n",    // family mismatch
+		"PROXY TCP6 203.0.113.7 10.0.0.1 4321 443\r\n",    // family mismatch
+		"PROXY TCP4 203.0.113.7 10.0.0.1 99999 443\r\n",   // port out of range
+		"PROXY TCP4 203.0.113.7 10.0.0.1 +43 443\r\n",     // not a plain decimal
+		"PROXY TCP4  203.0.113.7 10.0.0.1 4321 443\r\n",   // double space
+		"PROXY UDP4 203.0.113.7 10.0.0.1 4321 443\r\n",    // unknown protocol
+		"PROXY TCP4 203.0.113.7 10.0.0.1 4321 443\n",      // LF only
+		"PROXY TCP4 " + strings.Repeat("1", 120) + "\r\n", // over 107 bytes
+		"PROXZ TCP4 203.0.113.7 10.0.0.1 4321 443\r\n",
+	} {
+		srv, _ := serve(t, time.Second, []byte(h+"GET / HTTP/1.1\r\n\r\n"))
+		if _, err := srv.Read(make([]byte, 10)); !errors.Is(err, ErrNoHeader) {
+			t.Errorf("%q: Read err = %v, want ErrNoHeader", h, err)
+		}
 	}
 }
 
