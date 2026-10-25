@@ -168,16 +168,23 @@ Admin commands read and write the SQLite database directly and work while the
 server runs.
 
 ```
-passway-server admin --db PATH <command>
-  ban user <login> [--reason R]    ban host <label> [--reason R]
-  unban user <login>               unban host <label>
+passway-server admin --db PATH [--domain D] <command>
+  ban user <login> [--reason R]    ban host <label|custom-domain> [--reason R]
+  unban user <login>               unban host <label|custom-domain>
   set-plan <login> free|pro        whois <label>
   admit <login>                    backup <dest>
   token create <name>              token list        token revoke <id>
 ```
 
 `ban`, `unban`, `set-plan`, `whois` and `admit` apply to cloud accounts. A
-ban closes the live tunnels within about 15 seconds. `admit` takes a user off
+ban closes the live tunnels within about 15 seconds.
+
+`ban host` takes a tunnel subdomain by its label and a custom domain by its
+full hostname: `ban host foo` for `foo.<domain>`, `ban host hooks.example.com`
+for that custom domain. A full hostname under the base domain (`foo.<domain>`)
+would never match, so when the base domain is known (`--domain`, default
+`$PASSWAY_DOMAIN`) `ban host` and `unban host` refuse it with a usage error
+that names the label to pass instead. `admit` takes a user off
 the waitlist; a waitlisted user is also admitted automatically at their next
 sign-in once the number of Free accounts is below `--free-signup-cap`.
 `whois` prints `<label> -> @<login> (plan, user id)`. `token` manages the

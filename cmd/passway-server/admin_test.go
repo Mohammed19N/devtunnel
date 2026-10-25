@@ -266,3 +266,43 @@ func TestAdminBackupCLI(t *testing.T) {
 		t.Fatal("backup created the database")
 	}
 }
+
+// A tunnel hostname under the base domain never matches a host ban (the edge
+// looks up the label), so ban host refuses it and names the label (review M4).
+func TestAdminBanHostRefusesTunnelHostname(t *testing.T) {
+	db, st, _ := adminDB(t)
+	defer st.Close()
+	ctx := context.Background()
+	t.Setenv("PASSWAY_DOMAIN", "")
+	cases := []struct {
+		args  []string
+		label string
+	}{
+		{[]string{"--domain", "passway.test", "ban", "host", "foo.passway.test"}, "foo"},
+		{[]string{"--domain", "passway.test", "unban", "host", "FOO.Passway.test."}, "foo"},
+		{[]string{"--domain", "passway.test", "ban", "host", "passway.test"}, ""},
+	}
+	for _, c := range cases {
+		_, err := adm(t, db, c.args...)
+		if exitCode(err) != 2 || err == nil || !strings.Contains(err.Error(), "pass the label") ||
+			(c.label != "" && !strings.Contains(err.Error(), "ban host "+c.label)) {
+			t.Errorf("%v: err = %v (exit %d), want a usage error naming the label", c.args, err, exitCode(err))
+		}
+	}
+	t.Setenv("PASSWAY_DOMAIN", "passway.test")
+	if _, err := adm(t, db, "ban", "host", "bar.passway.test"); exitCode(err) != 2 {
+		t.Errorf("$PASSWAY_DOMAIN: err = %v (exit %d), want 2", err, exitCode(err))
+	}
+	if b, _ := st.IsBanned(ctx, "host", "bar.passway.test"); b {
+		t.Fatal("a never-matching tunnel hostname was stored")
+	}
+	// Custom domains are banned by their full hostname; labels by the label.
+	for _, v := range []string{"hooks.example.com", "foo"} {
+		if _, err := adm(t, db, "ban", "host", v); err != nil {
+			t.Fatalf("ban host %s: %v", v, err)
+		}
+		if b, _ := st.IsBanned(ctx, "host", v); !b {
+			t.Fatalf("%s not banned", v)
+		}
+	}
+}

@@ -6,15 +6,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/mohammed19n/passway/internal/server/store"
 )
 
-const adminUsage = `usage: passway-server admin --db PATH <command>
-  ban user <login> [--reason R]    ban host <label> [--reason R]
-  unban user <login>               unban host <label>
+const adminUsage = `usage: passway-server admin --db PATH [--domain D] <command>
+  ban user <login> [--reason R]    ban host <label|custom-domain> [--reason R]
+  unban user <login>               unban host <label|custom-domain>
   set-plan <login> free|pro        whois <label>
   admit <login>                    backup <dest>
   token create <name>              token list        token revoke <id>`
@@ -25,6 +26,7 @@ func runAdmin(ctx context.Context, args []string, out io.Writer) error {
 	fs := flag.NewFlagSet("passway-server admin", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	db := fs.String("db", "", "SQLite database path (required)")
+	domain := fs.String("domain", os.Getenv("PASSWAY_DOMAIN"), "base domain, to catch tunnel hostnames passed to ban host (default $PASSWAY_DOMAIN)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprintln(out, adminUsage)
@@ -44,7 +46,8 @@ func runAdmin(ctx context.Context, args []string, out io.Writer) error {
 	// Only "token create" may create it, so a fresh self-hosted install can
 	// make its first token before the server ever ran.
 	creating := len(rest) >= 2 && rest[0] == "token" && rest[1] == "create"
-	a := &admin{ctx: ctx, out: out, path: *db, create: creating}
+	a := &admin{ctx: ctx, out: out, path: *db, create: creating,
+		domain: strings.TrimSuffix(strings.ToLower(strings.TrimSpace(*domain)), ".")}
 	defer a.close()
 	cmd, rest := rest[0], rest[1:]
 	switch cmd {
@@ -80,7 +83,8 @@ type admin struct {
 	st     *store.Store // nil until ready
 	out    io.Writer
 	path   string
-	create bool // ready may create the database
+	create bool   // ready may create the database
+	domain string // the base domain, lowercased; "" = unknown
 }
 
 // ready opens the database. Commands call it once their arguments are valid.
@@ -120,6 +124,23 @@ func target(name string, args []string) (kind, value, reason string, err error) 
 	return args[0], args[1], *r, nil
 }
 
+// checkHost refuses a host ban value that can never match: the edge looks
+// tunnels on <label>.<domain> up by their label, so a ban on the full
+// hostname would never apply. Custom domains keep their full hostname.
+func (a *admin) checkHost(name, value string) error {
+	if a.domain == "" {
+		return nil
+	}
+	v := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), ".")
+	if v == a.domain {
+		return usageError{fmt.Errorf("admin %s host: %s is the base domain; pass the label of a tunnel (e.g. %s host foo for foo.%s)", name, v, name, a.domain)}
+	}
+	if label, ok := strings.CutSuffix(v, "."+a.domain); ok {
+		return usageError{fmt.Errorf("admin %s host: %s is a tunnel hostname, and tunnels are banned by label; pass the label: %s host %s", name, v, name, label)}
+	}
+	return nil
+}
+
 func (a *admin) user(login string) (store.User, error) {
 	if err := a.ready(); err != nil {
 		return store.User{}, err
@@ -135,6 +156,11 @@ func (a *admin) ban(args []string) error {
 	kind, value, reason, err := target("ban", args)
 	if err != nil {
 		return err
+	}
+	if kind == "host" {
+		if err := a.checkHost("ban", value); err != nil {
+			return err
+		}
 	}
 	if err := a.ready(); err != nil {
 		return err
@@ -161,6 +187,11 @@ func (a *admin) unban(args []string) error {
 	kind, value, _, err := target("unban", args)
 	if err != nil {
 		return err
+	}
+	if kind == "host" {
+		if err := a.checkHost("unban", value); err != nil {
+			return err
+		}
 	}
 	if err := a.ready(); err != nil {
 		return err
