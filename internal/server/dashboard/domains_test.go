@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -40,13 +42,18 @@ func (f *fakeResolver) LookupTXT(_ context.Context, name string) ([]string, erro
 	return nil, errors.New("no such host")
 }
 
-// evictions records the hosts passed to Config.DomainEvicted.
+// evictions records the calls to Config.DomainRemoved ("remove <host> <id>")
+// and Config.DomainVerified ("verify <host> <id>").
 type evictions struct {
 	mu    sync.Mutex
 	hosts []string
 }
 
-func (ev *evictions) add(h string) { ev.mu.Lock(); ev.hosts = append(ev.hosts, h); ev.mu.Unlock() }
+func (ev *evictions) add(kind, h string, id int64) {
+	ev.mu.Lock()
+	ev.hosts = append(ev.hosts, fmt.Sprintf("%s %s %d", kind, h, id))
+	ev.mu.Unlock()
+}
 func (ev *evictions) got() []string {
 	ev.mu.Lock()
 	defer ev.mu.Unlock()
@@ -62,7 +69,11 @@ func domainEnvEv(t *testing.T) (*testEnv, *fakeResolver, *evictions) {
 	t.Helper()
 	res := newFakeResolver()
 	ev := &evictions{}
-	return newTestEnv(t, func(c *Config) { c.Resolver = res; c.DomainEvicted = ev.add }), res, ev
+	return newTestEnv(t, func(c *Config) {
+		c.Resolver = res
+		c.DomainRemoved = func(h string, id int64) { ev.add("remove", h, id) }
+		c.DomainVerified = func(h string, id int64) { ev.add("verify", h, id) }
+	}), res, ev
 }
 
 func TestDomainValidation(t *testing.T) {
@@ -222,8 +233,8 @@ func TestVerifyEvictsPreviousOwner(t *testing.T) {
 	if w := e.post("/dashboard/domains/verify", url.Values{"host": {"hooks.example.com"}}, sc2, csrf2); w.Code != http.StatusSeeOther {
 		t.Fatalf("bob verify = %d %s", w.Code, w.Body)
 	}
-	if got := ev.got(); len(got) != before+1 || got[len(got)-1] != "hooks.example.com" {
-		t.Fatalf("evictions = %v, want hooks.example.com", got)
+	if got := ev.got(); len(got) != before+1 || got[len(got)-1] != fmt.Sprintf("verify hooks.example.com %d", bob.ID) {
+		t.Fatalf("evictions = %v, want verify by bob", got)
 	}
 	if list, _ := e.st.Domains(ctx, alice.ID); len(list) != 0 {
 		t.Fatalf("alice still has %+v", list)
@@ -231,20 +242,70 @@ func TestVerifyEvictsPreviousOwner(t *testing.T) {
 }
 
 func TestRemoveDomainEvicts(t *testing.T) {
-	e, _, ev := domainEnvEv(t)
+	e, res, ev := domainEnvEv(t)
 	ctx := context.Background()
 	sc, csrf := e.signedIn(t)
-	e.st.SetPlan(ctx, mustUser(t, e, "alice").ID, "pro")
+	alice := mustUser(t, e, "alice")
+	e.st.SetPlan(ctx, alice.ID, "pro")
 	e.post("/dashboard/domains", url.Values{"host": {"hooks.example.com"}}, sc, csrf)
+	// Removing a pending row evicts nothing: it never carried a tunnel.
 	if w := e.post("/dashboard/domains/remove", url.Values{"host": {"Hooks.example.com"}}, sc, csrf); w.Code != http.StatusSeeOther {
-		t.Fatalf("remove = %d %s", w.Code, w.Body)
+		t.Fatalf("remove pending = %d %s", w.Code, w.Body)
 	}
-	if got := ev.got(); len(got) != 1 || got[0] != "hooks.example.com" {
-		t.Fatalf("evictions = %v", got)
+	if got := ev.got(); len(got) != 0 {
+		t.Fatalf("evictions after removing a pending row = %v", got)
+	}
+	// Removing a verified row evicts the remover's own tunnel only.
+	e.post("/dashboard/domains", url.Values{"host": {"hooks.example.com"}}, sc, csrf)
+	al, _ := e.st.Domains(ctx, alice.ID)
+	res.cname["hooks.example.com"] = "edge.localhost"
+	res.txt["_passway.hooks.example.com"] = []string{"passway-verify=" + al[0].Token}
+	if w := e.post("/dashboard/domains/verify", url.Values{"host": {"hooks.example.com"}}, sc, csrf); w.Code != http.StatusSeeOther {
+		t.Fatalf("verify = %d %s", w.Code, w.Body)
+	}
+	if w := e.post("/dashboard/domains/remove", url.Values{"host": {"hooks.example.com"}}, sc, csrf); w.Code != http.StatusSeeOther {
+		t.Fatalf("remove verified = %d %s", w.Code, w.Body)
+	}
+	want := []string{fmt.Sprintf("verify hooks.example.com %d", alice.ID), fmt.Sprintf("remove hooks.example.com %d", alice.ID)}
+	if got := ev.got(); !slices.Equal(got, want) {
+		t.Fatalf("evictions = %v, want %v", got, want)
 	}
 	// Removing what you don't have evicts nothing.
 	e.post("/dashboard/domains/remove", url.Values{"host": {"hooks.example.com"}}, sc, csrf)
-	if got := ev.got(); len(got) != 1 {
+	if got := ev.got(); len(got) != 2 {
 		t.Fatalf("evictions after a 404 = %v", got)
+	}
+}
+
+// A non-owner's pending add and remove of a verified host never reaches the
+// eviction hooks (review I1).
+func TestRemovePendingOfOwnedDomainEvictsNothing(t *testing.T) {
+	e, res, ev := domainEnvEv(t)
+	ctx := context.Background()
+	sc, csrf := e.signedIn(t)
+	alice := mustUser(t, e, "alice")
+	e.st.SetPlan(ctx, alice.ID, "pro")
+	e.post("/dashboard/domains", url.Values{"host": {"hooks.example.com"}}, sc, csrf)
+	al, _ := e.st.Domains(ctx, alice.ID)
+	res.cname["hooks.example.com"] = "edge.localhost"
+	res.txt["_passway.hooks.example.com"] = []string{"passway-verify=" + al[0].Token}
+	e.post("/dashboard/domains/verify", url.Values{"host": {"hooks.example.com"}}, sc, csrf)
+	before := len(ev.got())
+
+	sc2, csrf2 := e.signedInAs(t, 43, "bob")
+	e.st.SetPlan(ctx, mustUser(t, e, "bob").ID, "pro")
+	for i := 0; i < 3; i++ {
+		if w := e.post("/dashboard/domains", url.Values{"host": {"hooks.example.com"}}, sc2, csrf2); w.Code != http.StatusSeeOther {
+			t.Fatalf("bob add = %d %s", w.Code, w.Body)
+		}
+		if w := e.post("/dashboard/domains/remove", url.Values{"host": {"hooks.example.com"}}, sc2, csrf2); w.Code != http.StatusSeeOther {
+			t.Fatalf("bob remove = %d %s", w.Code, w.Body)
+		}
+	}
+	if got := ev.got(); len(got) != before {
+		t.Fatalf("bob's pending add/remove evicted: %v", got[before:])
+	}
+	if list, _ := e.st.Domains(ctx, alice.ID); len(list) != 1 || list[0].VerifiedAt == nil {
+		t.Fatalf("alice's domain = %+v", list)
 	}
 }

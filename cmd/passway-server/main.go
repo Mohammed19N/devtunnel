@@ -361,7 +361,8 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 		}
 		dcfg.PollBans = func() { srv.PollBansNow(ctx) }
 		dcfg.Disconnect = func(id string, tokenID int64) { srv.CloseTokenTunnels(id, tokenID) }
-		dcfg.DomainEvicted = func(host string) { srv.CloseHostTunnels(host) }
+		dcfg.DomainRemoved = func(host string, id int64) { srv.CloseHostTunnelsOf(host, strconv.FormatInt(id, 10)) }
+		dcfg.DomainVerified = func(host string, id int64) { srv.CloseHostTunnelsExcept(host, strconv.FormatInt(id, 10)) }
 		dash, err := dashboard.New(dcfg)
 		if err != nil {
 			closeListeners(plainLn, tlsLn)

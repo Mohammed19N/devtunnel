@@ -889,7 +889,7 @@ func TestCloudDomainHostBanned(t *testing.T) {
 	}
 }
 
-func TestCloseHostTunnels(t *testing.T) {
+func TestCloseHostTunnelsOf(t *testing.T) {
 	d := newFakeDirectory(PlanPro, "acme")
 	d.domains = []string{"hooks.example.com"}
 	srv, ts := newCloudServer(t, d)
@@ -901,7 +901,15 @@ func TestCloseHostTunnels(t *testing.T) {
 	if resp.Ready == nil {
 		t.Fatalf("label ready: %+v", resp.Error)
 	}
-	srv.CloseHostTunnels("HOOKS.example.com")
+	// Owner-scoped: another account's remove or the owner's own verify
+	// leaves u1's tunnel up.
+	srv.CloseHostTunnelsOf("hooks.example.com", "u2")
+	srv.CloseHostTunnelsExcept("hooks.example.com", "u1")
+	time.Sleep(50 * time.Millisecond)
+	if sess.IsClosed() {
+		t.Fatal("tunnel closed by an eviction scoped to another account")
+	}
+	srv.CloseHostTunnelsOf("HOOKS.example.com", "u1")
 	waitClosed(t, sess, "custom-domain session")
 	if other.IsClosed() {
 		t.Fatal("unrelated tunnel closed")
@@ -913,6 +921,25 @@ func TestCloseHostTunnels(t *testing.T) {
 	d.mu.Unlock()
 	resp, _ = dialRaw(t, ts, domainHello("hooks.example.com", "C"))
 	if resp.Ready == nil {
+		t.Fatalf("new owner blocked: %+v", resp.Error)
+	}
+}
+
+func TestCloseHostTunnelsExcept(t *testing.T) {
+	d := newFakeDirectory(PlanPro, "acme")
+	d.domains = []string{"hooks.example.com"}
+	srv, ts := newCloudServer(t, d)
+	resp, sess := dialRaw(t, ts, domainHello("hooks.example.com", "A"))
+	if resp.Ready == nil {
+		t.Fatalf("ready: %+v", resp.Error)
+	}
+	// u2 verified the host: u1's tunnel goes and u1 holds nothing on it.
+	srv.CloseHostTunnelsExcept("hooks.example.com", "u2")
+	waitClosed(t, sess, "previous owner's session")
+	d.mu.Lock()
+	d.acc = Account{ID: "u2", Login: "carol", Plan: PlanPro}
+	d.mu.Unlock()
+	if resp, _ = dialRaw(t, ts, domainHello("hooks.example.com", "C")); resp.Ready == nil {
 		t.Fatalf("new owner blocked: %+v", resp.Error)
 	}
 }

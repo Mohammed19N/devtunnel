@@ -136,8 +136,8 @@ func (d *Dashboard) handleVerifyDomain(w http.ResponseWriter, r *http.Request, s
 		d.internalError(w, "verify domain", err)
 		return
 	}
-	// The fresh proof wins: close the previous owner's tunnel on the host.
-	d.cfg.DomainEvicted(host)
+	// The fresh proof wins: close any other account's tunnel on the host.
+	d.cfg.DomainVerified(host, s.User.ID)
 	if err := d.cfg.Store.Audit(r.Context(), s.User.ID, "domain.verify", host); err != nil {
 		d.internalError(w, "audit", err)
 		return
@@ -147,7 +147,8 @@ func (d *Dashboard) handleVerifyDomain(w http.ResponseWriter, r *http.Request, s
 
 func (d *Dashboard) handleRemoveDomain(w http.ResponseWriter, r *http.Request, s *session) {
 	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(r.PostFormValue("host"))), ".")
-	switch err := d.cfg.Store.RemoveDomain(r.Context(), s.User.ID, host); {
+	verified, err := d.cfg.Store.RemoveDomain(r.Context(), s.User.ID, host)
+	switch {
 	case errors.Is(err, store.ErrNotFound):
 		d.fail(w, http.StatusNotFound, "You don't have that domain.")
 		return
@@ -155,7 +156,11 @@ func (d *Dashboard) handleRemoveDomain(w http.ResponseWriter, r *http.Request, s
 		d.internalError(w, "remove domain", err)
 		return
 	}
-	d.cfg.DomainEvicted(host)
+	// A pending row never carried a tunnel, and anyone may add one for a
+	// host someone else verified: removing it must not touch that owner.
+	if verified {
+		d.cfg.DomainRemoved(host, s.User.ID)
+	}
 	if err := d.cfg.Store.Audit(r.Context(), s.User.ID, "domain.remove", host); err != nil {
 		d.internalError(w, "audit", err)
 		return

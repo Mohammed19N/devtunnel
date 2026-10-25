@@ -267,3 +267,33 @@ func TestHoldSelfHostedStaysPerSession(t *testing.T) {
 	r.Release(a)
 	wantCode(t, claimErr(r, ClaimRequest{Name: "acme", SessionID: "B"}, &Tunnel{Account: Account{ID: "static"}}), protocol.CodeNameTaken)
 }
+
+// EvictIf drops only the tunnel and hold of the accounts match picks.
+func TestEvictIfOwnerScoped(t *testing.T) {
+	r, _ := newTestRegistry()
+	a := &Tunnel{Account: Account{ID: "u1"}}
+	if _, err := r.Claim(ClaimRequest{Host: "hooks.example.com", SessionID: "A", AccountID: "u1"}, a); err != nil {
+		t.Fatal(err)
+	}
+	notU1 := func(id string) bool { return id == "u2" }
+	if got := r.EvictIf("hooks.example.com", notU1); got != nil {
+		t.Fatalf("evicted %+v for another account", got)
+	}
+	if cur, ok := r.Lookup("hooks.example.com"); !ok || cur != a {
+		t.Fatal("u1's tunnel is gone")
+	}
+	r.Release(a)
+	r.EvictIf("hooks.example.com", notU1)
+	wantCode(t, claimErr(r, ClaimRequest{Host: "hooks.example.com", SessionID: "C", AccountID: "u2"}, &Tunnel{}), protocol.CodeNameTaken)
+
+	if _, err := r.Claim(ClaimRequest{Host: "hooks.example.com", SessionID: "B", AccountID: "u1"}, a); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.EvictIf("hooks.example.com", func(id string) bool { return id == "u1" }); got != a {
+		t.Fatalf("EvictIf(u1) = %v, want u1's tunnel", got)
+	}
+	// Neither active nor held: u2 takes it at once.
+	if _, err := r.Claim(ClaimRequest{Host: "hooks.example.com", SessionID: "C", AccountID: "u2"}, &Tunnel{Account: Account{ID: "u2"}}); err != nil {
+		t.Fatalf("u2 after eviction: %v", err)
+	}
+}

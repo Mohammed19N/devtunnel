@@ -118,18 +118,21 @@ func (s *Store) VerifyDomain(ctx context.Context, userID int64, host string) err
 	return err
 }
 
-// RemoveDomain deletes userID's row for host; ErrNotFound if there is none.
-func (s *Store) RemoveDomain(ctx context.Context, userID int64, host string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM custom_domains WHERE host = ? AND user_id = ?`, normHost(host), userID)
+// RemoveDomain deletes userID's row for host and reports whether that row
+// was verified; ErrNotFound if there is none. Only a verified row ever
+// carried a live tunnel, so callers evict only when verified is true.
+func (s *Store) RemoveDomain(ctx context.Context, userID int64, host string) (verified bool, err error) {
+	var at sql.NullString
+	err = s.db.QueryRowContext(ctx,
+		`DELETE FROM custom_domains WHERE host = ? AND user_id = ? RETURNING verified_at`,
+		normHost(host), userID).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	}
 	if err != nil {
-		return err
+		return false, err
 	}
-	if n, err := res.RowsAffected(); err != nil {
-		return err
-	} else if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return at.Valid, nil
 }
 
 // Domains lists userID's custom domains, oldest first.

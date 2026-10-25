@@ -83,10 +83,18 @@ func TestAddDomainVerifiedTaken(t *testing.T) {
 	if ok, _ := dir.OwnsDomain(ctx, server.Account{ID: strconv.FormatInt(b.ID, 10), Plan: server.PlanPro}, "hooks.example.com"); ok {
 		t.Fatal("B still owns the domain")
 	}
-	if err := s.RemoveDomain(ctx, c.ID, "hooks.example.com"); err != nil {
+	// A pending row for the same host is removed without touching C's, and
+	// reported as unverified.
+	if _, err := s.AddDomain(ctx, b.ID, "hooks.example.com", 2); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RemoveDomain(ctx, c.ID, "hooks.example.com"); !errors.Is(err, ErrNotFound) {
+	if verified, err := s.RemoveDomain(ctx, b.ID, "hooks.example.com"); err != nil || verified {
+		t.Fatalf("remove pending = %v, %v; want false, nil", verified, err)
+	}
+	if verified, err := s.RemoveDomain(ctx, c.ID, "hooks.example.com"); err != nil || !verified {
+		t.Fatalf("remove verified = %v, %v; want true, nil", verified, err)
+	}
+	if _, err := s.RemoveDomain(ctx, c.ID, "hooks.example.com"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second remove = %v", err)
 	}
 }

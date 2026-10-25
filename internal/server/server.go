@@ -164,14 +164,25 @@ func (s *Server) CloseAccountTunnels(accountID string) {
 	}
 }
 
-// CloseHostTunnels closes the live tunnel on custom domain host and drops
-// its hold, e.g. after the domain was removed or verified by a new owner.
-func (s *Server) CloseHostTunnels(host string) {
+// CloseHostTunnelsOf closes accountID's live tunnel on custom domain host
+// and drops its hold, e.g. after accountID removed its verified domain.
+// Another account's tunnel on host is left alone.
+func (s *Server) CloseHostTunnelsOf(host, accountID string) {
+	s.closeHost(host, func(id string) bool { return id == accountID })
+}
+
+// CloseHostTunnelsExcept closes every other account's live tunnel on custom
+// domain host and drops their holds, e.g. after accountID verified it.
+func (s *Server) CloseHostTunnelsExcept(host, accountID string) {
+	s.closeHost(host, func(id string) bool { return id != accountID })
+}
+
+func (s *Server) closeHost(host string, match func(accountID string) bool) {
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
 	if !strings.Contains(host, ".") {
 		return // not a custom domain
 	}
-	if t := s.registry.Evict(host); t != nil && t.session != nil {
+	if t := s.registry.EvictIf(host, match); t != nil && t.session != nil {
 		s.log.Info("closing tunnel on evicted custom domain", "name", t.Name, "account", t.Account.ID)
 		t.session.Close()
 	}

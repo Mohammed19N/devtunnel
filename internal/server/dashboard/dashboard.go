@@ -52,9 +52,13 @@ type Config struct {
 	Resolver Resolver
 	// EdgeHost is the CNAME target for custom domains; "" = "edge.<BaseURL host>".
 	EdgeHost string
-	// DomainEvicted closes the live tunnels on a custom domain after it was
-	// removed or verified by a new owner. nil = no-op.
-	DomainEvicted func(host string)
+	// DomainRemoved closes userID's own live tunnel on custom domain host
+	// and drops its hold, after userID removed its verified row. Other
+	// accounts' tunnels on host must stay up. nil = no-op.
+	DomainRemoved func(host string, userID int64)
+	// DomainVerified closes every other account's live tunnel on host and
+	// drops their holds, after userID verified it. nil = no-op.
+	DomainVerified func(host string, userID int64)
 
 	// AdminGitHubIDs are the numeric GitHub user IDs that may use /admin.
 	// IDs, not logins: a login can be renamed and then taken by someone else.
@@ -172,8 +176,11 @@ func New(cfg Config) (*Dashboard, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	if cfg.DomainEvicted == nil {
-		cfg.DomainEvicted = func(string) {}
+	if cfg.DomainRemoved == nil {
+		cfg.DomainRemoved = func(string, int64) {}
+	}
+	if cfg.DomainVerified == nil {
+		cfg.DomainVerified = func(string, int64) {}
 	}
 	if cfg.Resolver == nil {
 		cfg.Resolver = net.DefaultResolver

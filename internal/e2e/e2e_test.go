@@ -107,7 +107,10 @@ func setupEnv(t *testing.T, o opts) (*env, *server.Server) {
 			Disconnect:    func(id string, token int64) { srv.CloseTokenTunnels(id, token) },
 			PlanChanged:   func(id int64) { srv.CloseAccountTunnels(strconv.FormatInt(id, 10)) },
 			Resolver:      o.resolver,
-			DomainEvicted: func(host string) { srv.CloseHostTunnels(host) },
+			DomainRemoved: func(host string, id int64) { srv.CloseHostTunnelsOf(host, strconv.FormatInt(id, 10)) },
+			DomainVerified: func(host string, id int64) {
+				srv.CloseHostTunnelsExcept(host, strconv.FormatInt(id, 10))
+			},
 		}
 		if o.billing != nil {
 			dcfg.Billing = &billing.Client{Key: "sk_test_e2e", BaseURL: o.billing.srv.URL}
@@ -1356,5 +1359,57 @@ func TestCloudFooterAndBlocklist(t *testing.T) {
 	var pe *protocol.Error
 	if !errors.As(err, &pe) || pe.Code != protocol.CodeInvalidName || !strings.Contains(pe.Message, "blocked word") {
 		t.Fatalf("got %v, want a blocked-word refusal", err)
+	}
+}
+
+// A non-owner adding and removing a pending row for someone else's verified
+// domain must not touch the owner's live tunnel (review I1).
+func TestCloudCustomDomainNonOwnerRemoveKeepsTunnel(t *testing.T) {
+	res := newFakeResolver()
+	e, srv := setupEnv(t, opts{cloud: true, resolver: res})
+	ctx := context.Background()
+	const host = "hooks.example.test"
+
+	alice := e.devLogin(t, "alice")
+	tok := alice.newToken("laptop")
+	aliceID := e.userID(t, "alice")
+	if err := e.store.SetPlan(ctx, aliceID, "pro"); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := alice.post("/dashboard/domains", url.Values{"host": {host}}); code != http.StatusSeeOther {
+		t.Fatalf("alice add: %d %s", code, body)
+	}
+	doms, _ := e.store.Domains(ctx, aliceID)
+	res.set(host, "edge.localhost.", "passway-verify="+doms[0].Token)
+	if code, body := alice.postFrom("/dashboard/domains", "/dashboard/domains/verify", url.Values{"host": {host}}); code != http.StatusSeeOther {
+		t.Fatalf("alice verify: %d %s", code, body)
+	}
+	_, ready, _, _ := e.runClient(t, client.Config{Token: tok, Domain: host})
+	aid := strconv.FormatInt(aliceID, 10)
+	before := srv.TunnelsFor(aid)
+	if len(before) != 1 {
+		t.Fatalf("alice tunnels: %+v", before)
+	}
+
+	mallory := e.devLogin(t, "mallory")
+	if err := e.store.SetPlan(ctx, e.userID(t, "mallory"), "pro"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if code, body := mallory.post("/dashboard/domains", url.Values{"host": {host}}); code != http.StatusSeeOther {
+			t.Fatalf("mallory add: %d %s", code, body)
+		}
+		if code, body := mallory.postFrom("/dashboard/domains", "/dashboard/domains/remove", url.Values{"host": {host}}); code != http.StatusSeeOther {
+			t.Fatalf("mallory remove: %d %s", code, body)
+		}
+	}
+	after := srv.TunnelsFor(aid)
+	if len(after) != 1 || !after[0].ConnectedAt.Equal(before[0].ConnectedAt) {
+		t.Fatalf("alice's tunnel was cut: before %+v, after %+v", before, after)
+	}
+	select {
+	case r := <-ready:
+		t.Fatalf("alice's client reconnected: %+v", r)
+	case <-time.After(500 * time.Millisecond):
 	}
 }
