@@ -215,3 +215,21 @@ func hostOnly(host string) string {
 	}
 	return strings.TrimSuffix(host, ".")
 }
+
+// Stats is a snapshot of live activity for the admin page.
+type Stats struct {
+	Tunnels  int
+	ByPlan   map[string]int // live tunnels by plan name
+	Requests int64          // requests proxied by the live tunnels
+}
+
+// Stats counts the live tunnels and their requests.
+func (s *Server) Stats() Stats {
+	st := Stats{ByPlan: map[string]int{}}
+	for _, t := range s.registry.All() {
+		st.Tunnels++
+		st.ByPlan[t.Account.Plan.Name]++
+		st.Requests += t.Requests()
+	}
+	return st
+}

@@ -224,3 +224,15 @@ func (s *Store) AllowCert(ctx context.Context, host string) error {
 	}
 	return nil
 }
+
+// VerifiedDomainOwner returns the owner of the verified custom domain host,
+// or ErrNotFound when no one has verified it.
+func (s *Store) VerifiedDomainOwner(ctx context.Context, host string) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT user_id FROM custom_domains WHERE host = ? AND verified_at IS NOT NULL`, normHost(host)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return id, err
+}

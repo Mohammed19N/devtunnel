@@ -16,7 +16,7 @@ const adminUsage = `usage: passway-server admin --db PATH <command>
   ban user <login> [--reason R]    ban host <label> [--reason R]
   unban user <login>               unban host <label>
   set-plan <login> free|pro        whois <label>
-  admit <login>
+  admit <login>                    backup <dest>
   token create <name>              token list        token revoke <id>`
 
 // runAdmin runs one admin command against the SQLite database directly and
@@ -64,6 +64,11 @@ func runAdmin(ctx context.Context, args []string, out io.Writer) error {
 			return usageError{errors.New("usage: admin whois <label>")}
 		}
 		return a.whois(rest[0])
+	case "backup":
+		if len(rest) != 1 {
+			return usageError{errors.New("usage: admin backup <dest>")}
+		}
+		return a.backup(rest[0])
 	case "token":
 		return a.token(rest)
 	}
@@ -223,6 +228,18 @@ func (a *admin) whois(label string) error {
 		return err
 	}
 	fmt.Fprintf(a.out, "%s -> @%s (%s, user %d)\n", label, u.Login, u.Plan, u.ID)
+	return nil
+}
+
+// backup copies the database to dest, which must not exist yet.
+func (a *admin) backup(dest string) error {
+	if err := a.ready(); err != nil {
+		return err
+	}
+	if err := a.st.Backup(a.ctx, dest); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "backup written to %s\n", dest)
 	return nil
 }
 

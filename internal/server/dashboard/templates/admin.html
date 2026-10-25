@@ -1,0 +1,34 @@
+{{define "admin"}}{{template "head" .}}
+{{with .Admin}}
+<h1>Admin</h1>
+<h2>Live</h2>
+<ul>
+<li>Tunnels: <strong data-stat="tunnels">{{.Tunnels}}</strong>{{range .TunnelsByPlan}} &middot; {{.Plan}} {{.Count}}{{end}}</li>
+<li>Requests: <strong data-stat="requests">{{.Requests}}</strong></li>
+</ul>
+<h2>Users</h2>
+<ul>
+<li>Free: <strong data-stat="users-free">{{.UsersFree}}</strong></li>
+<li>Pro: <strong data-stat="users-pro">{{.UsersPro}}</strong></li>
+<li>Waitlist: <strong data-stat="waitlist">{{.Waitlist}}</strong></li>
+</ul>
+<h2>Bandwidth in {{.Month}}</h2>
+<ul>
+<li>Free: {{.FreeUsed}} of {{.Cap}} ({{.FreePercent}}%)</li>
+<li>Pro: {{.ProUsed}}</li>
+</ul>
+<h2>Abuse reports</h2>
+{{if .Reports}}<div class="scroll"><table>
+<thead><tr><th>Report</th><th>Details</th><th></th></tr></thead>
+<tbody>{{range .Reports}}<tr>
+<td>#{{.ID}} {{.Category}}<br>{{if .Link}}<a href="{{.Link}}" rel="noopener noreferrer nofollow">{{.URL}}</a>{{else}}{{.URL}}{{end}}<br>{{.Created}}</td>
+<td>{{.Details}}<br>{{.Email}} {{.IP}}</td>
+<td>
+{{if .CanBanHost}}<form method="post" action="/admin/ban"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="report" value="{{.ID}}"><input type="hidden" name="kind" value="host"><button type="submit" class="link" aria-label="Ban host of report {{.ID}}">Ban host</button></form>{{end}}
+{{if .CanBanUser}}<form method="post" action="/admin/ban"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="report" value="{{.ID}}"><input type="hidden" name="kind" value="user"><button type="submit" class="link" aria-label="Ban user of report {{.ID}}">Ban user</button></form>{{end}}
+<form method="post" action="/admin/resolve"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="report" value="{{.ID}}"><button type="submit" class="link" aria-label="Resolve report {{.ID}}">Resolve</button></form>
+</td></tr>{{end}}</tbody>
+</table></div>{{else}}<p>No unresolved reports.</p>{{end}}
+{{end}}
+<p><a href="/dashboard">Back to dashboard</a></p>
+{{template "foot" .}}{{end}}

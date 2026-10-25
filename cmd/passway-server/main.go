@@ -74,6 +74,7 @@ type cloudOpts struct {
 	minGitHubAge                *time.Duration
 	freeSignupCap               *int
 	freeBandwidthCap            *int64
+	adminLogins                 *string
 	devLogin                    *bool
 	stripePricePro              *string
 	legalOperator               *string
@@ -90,6 +91,7 @@ func cloudFlags(fs *flag.FlagSet) cloudOpts {
 		minGitHubAge:      fs.Duration("min-github-age", 48*time.Hour, "minimum GitHub account age to sign up (0 disables)"),
 		freeSignupCap:     fs.Int("free-signup-cap", 1000, "max Free accounts; further signups are waitlisted"),
 		freeBandwidthCap:  fs.Int64("free-bandwidth-cap", 500<<30, "monthly bandwidth in bytes across all Free accounts"),
+		adminLogins:       fs.String("admin-logins", "", "comma-separated GitHub logins that may open /admin (cloud mode)"),
 		stripePricePro:    fs.String("stripe-price-pro", "", "Stripe price ID of the Pro plan (cloud mode; billing also needs $PASSWAY_STRIPE_SECRET_KEY and $PASSWAY_STRIPE_WEBHOOK_SECRET)"),
 		devLogin:          fs.Bool("dev-login", false, "enable the passwordless /auth/dev login (localhost domains only)"),
 		legalOperator:     fs.String("legal-operator", "", `who runs the service, named on the terms, privacy and acceptable use pages (default "the operator of this service")`),
@@ -348,6 +350,11 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 			}
 			return out
 		}
+		dcfg.Stats = func() dashboard.AdminStats {
+			st := srv.Stats()
+			return dashboard.AdminStats{Tunnels: st.Tunnels, ByPlan: st.ByPlan, Requests: st.Requests}
+		}
+		dcfg.PollBans = func() { srv.PollBansNow(ctx) }
 		dcfg.Disconnect = func(id string, tokenID int64) { srv.CloseTokenTunnels(id, tokenID) }
 		dcfg.DomainEvicted = func(host string) { srv.CloseHostTunnels(host) }
 		dash, err := dashboard.New(dcfg)
@@ -486,9 +493,23 @@ func (cf cloudOpts) dashboardConfig(st *store.Store, base, secret string) dashbo
 		GitHubClientSecret: secret,
 		MinGitHubAge:       *cf.minGitHubAge,
 		FreeSignupCap:      *cf.freeSignupCap,
+		FreeBandwidthCap:   *cf.freeBandwidthCap,
+		Admins:             splitLogins(*cf.adminLogins),
 		DevLogin:           *cf.devLogin,
 		LegalOperator:      *cf.legalOperator,
 		LegalJurisdiction:  *cf.legalJurisdiction,
 		AbuseEmail:         *cf.abuseEmail,
 	}
+}
+
+// splitLogins splits a comma-separated login list, dropping blanks and a
+// leading "@".
+func splitLogins(s string) []string {
+	var out []string
+	for _, l := range strings.Split(s, ",") {
+		if l = strings.TrimPrefix(strings.TrimSpace(l), "@"); l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
 }

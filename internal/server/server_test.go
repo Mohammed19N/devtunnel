@@ -38,3 +38,20 @@ func TestBaseDomainRoutesToDashboard(t *testing.T) {
 		t.Errorf("without dashboard: /dashboard = %d, want 404", got)
 	}
 }
+
+func TestStats(t *testing.T) {
+	s := New(Config{Domain: "x.test"})
+	a := &Tunnel{Name: "aaa", SessionID: "1", Account: Account{ID: "1", Plan: PlanFree}}
+	b := &Tunnel{Name: "bbb", SessionID: "2", Account: Account{ID: "2", Plan: PlanPro}}
+	for _, tn := range []*Tunnel{a, b} {
+		if _, err := s.registry.Claim(ClaimRequest{Name: tn.Name, SessionID: tn.SessionID}, tn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.requests.Add(5)
+	b.requests.Add(7)
+	got := s.Stats()
+	if got.Tunnels != 2 || got.Requests != 12 || got.ByPlan["free"] != 1 || got.ByPlan["pro"] != 1 {
+		t.Fatalf("Stats = %+v", got)
+	}
+}

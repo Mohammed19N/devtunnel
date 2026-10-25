@@ -56,6 +56,15 @@ type Config struct {
 	// removed or verified by a new owner. nil = no-op.
 	DomainEvicted func(host string)
 
+	// Admins are the GitHub logins (case-insensitive) that may use /admin.
+	Admins []string
+	// Stats reports live tunnel activity for /admin; nil = zeros.
+	Stats func() AdminStats
+	// PollBans applies new bans to live tunnels right away; nil = no-op.
+	PollBans func()
+	// FreeBandwidthCap is the monthly Free-plan cap in bytes shown on /admin.
+	FreeBandwidthCap int64
+
 	Tunnels func(accountID string) []TunnelInfo // live tunnels for the dashboard
 	// Disconnect closes the live tunnels of accountID that use tokenID; it is
 	// called after the token is revoked. nil = no-op.
@@ -230,6 +239,9 @@ func (d *Dashboard) routes() {
 		// Stripe calls this: no session, CSRF or origin checks; the signature is the auth.
 		m.HandleFunc("POST /stripe/webhook", d.handleStripeWebhook)
 	}
+	m.HandleFunc("GET /admin", d.page(d.adminOnly(d.handleAdmin)))
+	d.handlePost("/admin/ban", d.adminOnly(d.handleAdminBan))
+	d.handlePost("/admin/resolve", d.adminOnly(d.handleAdminResolve))
 	m.HandleFunc("GET /waitlist", d.page(d.handleWaitlist))
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		d.fail(w, http.StatusNotFound, "There's nothing here.")
@@ -300,6 +312,7 @@ type view struct {
 	Tokens      []tokenRow
 	NewToken    string // plaintext of a token created by this very request
 	NewName     string
+	Admin       *adminView
 }
 
 // render executes the named template into a buffer and writes it with status.

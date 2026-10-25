@@ -156,3 +156,10 @@ func (s *Store) CountUsers(ctx context.Context, plan string) (int, error) {
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE plan = ? AND waitlisted = 0`, plan).Scan(&n)
 	return n, err
 }
+
+// CountWaitlisted counts users waiting for a Free slot.
+func (s *Store) CountWaitlisted(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE waitlisted = 1`).Scan(&n)
+	return n, err
+}

@@ -235,3 +235,34 @@ func TestAdminTokenCreateMakesDB(t *testing.T) {
 		t.Errorf("token create did not make the database: %v", err)
 	}
 }
+
+func TestAdminBackupCLI(t *testing.T) {
+	db, st, _ := adminDB(t)
+	defer st.Close()
+	dest := filepath.Join(t.TempDir(), "b.db")
+	out, err := adm(t, db, "backup", dest)
+	if want := "backup written to " + dest + "\n"; err != nil || out != want {
+		t.Fatalf("backup = %q, %v; want %q", out, err, want)
+	}
+	b, err := store.OpenExisting(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if _, err := b.UserByLogin(context.Background(), "alice"); err != nil {
+		t.Fatalf("backup lacks alice: %v", err)
+	}
+	if _, err := adm(t, db, "backup", dest); exitCode(err) != 1 {
+		t.Fatalf("second backup err = %v, want exit 1", err)
+	}
+	if _, err := adm(t, db, "backup"); exitCode(err) != 2 {
+		t.Fatalf("missing dest err = %v, want usage error", err)
+	}
+	missing := filepath.Join(t.TempDir(), "none.db")
+	if _, err := adm(t, missing, "backup", filepath.Join(t.TempDir(), "x.db")); exitCode(err) != 1 {
+		t.Fatalf("missing db err = %v, want exit 1", err)
+	}
+	if _, err := os.Stat(missing); err == nil {
+		t.Fatal("backup created the database")
+	}
+}
