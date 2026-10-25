@@ -1,195 +1,167 @@
+<!-- OWNER: replace <domain> with the Passway Cloud domain once it exists
+     (also in docs/launch/). See docs/launch/checklist.md. -->
+
 # Passway
 
 **An open-source, self-hostable ngrok alternative built for webhook debugging.**
-One command gives a local app a public URL.
 
-> **Status: early development.** Milestone 1 (the core tunnel) and milestone 2
-> (request inspector, replay and basic abuse protection) work: you can run your
-> own relay server, expose a local HTTP app through it and inspect the traffic.
-> Expect rough edges and breaking changes.
+`passway http 3000` gives your local app a public HTTPS URL. A local inspector
+shows every request that comes through it, and you can replay any of them
+with one click.
 
-## What works today
+![A Stripe webhook arriving in the Passway inspector, opened to show its headers and JSON body, then replayed](docs/img/demo.gif)
 
-- `passway http <port>` exposes a local HTTP app at `http://<name>.<your-domain>`
-- Streaming request and response bodies
-- Automatic reconnect, keeping the same public URL
-- Token authentication (`--tokens`) and optional TLS on the relay server
-- A friendly 502 page when the tunnel is offline
-- A local request inspector with replay (see below)
-- Per-tunnel rate limiting, a connection cap and an optional browser warning page
+## Quickstart (Passway Cloud)
 
-## Quickstart (local)
-
-Requires the Go version listed in `go.mod`.
+Install the CLI:
 
 ```sh
-git clone https://github.com/Mohammed19N/devtunnel
-cd devtunnel
+curl -fsSL https://<domain>/install.sh | sh
+# or
+brew install mohammed19n/tap/passway
 ```
 
-In one terminal, start the relay server:
+Prebuilt binaries for Linux, macOS and Windows are on the
+[releases page](https://github.com/mohammed19n/passway/releases). The install
+script verifies the archive's checksum before installing anything.
 
-```sh
-go run ./cmd/passway-server --domain localhost
+Then:
+
+1. Sign in at `https://<domain>` with GitHub.
+2. Create a CLI token under **CLI tokens**, then run `passway login <token>`.
+3. Run `passway http 3000`.
+
+```
+Forwarding   https://<your-name>.<domain> -> http://localhost:3000
+Plan         Free - 60 req/min - 1 GB/month
+Inspector    http://127.0.0.1:4040
 ```
 
-To try the cloud flow locally (accounts, dashboard, plans) instead:
+Point Stripe, GitHub, Shopify or any webhook sender at that URL, and open the
+inspector.
 
-```sh
-go run ./cmd/passway-server --mode cloud --domain localhost --db ./passway.db --dev-login
-```
+## Features
 
-then open http://localhost:8080/auth/dev, enter a name in the form to sign in, create a token
-under CLI tokens and run `passway login <token>`.
+- **A complete tunnel.** It streams request and response bodies, handles
+  WebSockets and large uploads, and reconnects automatically while keeping the
+  same URL. The client makes one outbound connection over HTTPS on port 443,
+  so it works through most corporate firewalls.
+- **The inspector** at http://127.0.0.1:4040 lists every request live, with
+  headers, bodies (JSON pretty-printed) and timing for both the request and
+  the response.
+  - **Replay** resends a request unchanged, including headers such as
+    `Stripe-Signature`.
+  - **Edit & Replay** lets you change the method, path, headers or body
+    first.
+  - **Copy as cURL** builds a command for the request.
+- **Stable names.** Every cloud account gets a default subdomain, and you
+  can reserve more and pick one with `--name`.
+- **Custom domains** (Pro). Add `hooks.example.com` in the dashboard, create
+  a CNAME and a TXT record, verify it, then run
+  `passway http 3000 --domain hooks.example.com`. Certificates are issued
+  automatically.
+- **Abuse controls** keep the shared domain usable:
+  - Sign-in with GitHub (a minimum account age applies to sign-ups).
+  - A one-time warning page for browser visitors on Free tunnels. Webhooks
+    and API calls are never interrupted.
+  - A blocklist of brand and phishing words in subdomains.
+  - Per-tunnel rate limits and an abuse report form.
+- **Self-hostable.** It is one static binary or one Docker image. Self-hosted
+  relays have no accounts, limits or branding.
 
-In another, start something to expose on port 3000, for example:
+### Inspector details
 
-```sh
-python3 -m http.server 3000
-```
-
-In a third, open the tunnel:
-
-```sh
-go run ./cmd/passway http 3000
-```
-
-The CLI prints a public URL such as `http://brave-marmot-93.localhost:8080`.
-Request it:
-
-```sh
-curl http://<name>.localhost:8080/
-```
-
-`curl` resolves `*.localhost` to loopback by itself. Other clients may not, so
-send the tunnel's hostname as a `Host` header instead:
-
-```sh
-curl -H 'Host: <name>.localhost:8080' http://127.0.0.1:8080/
-```
-
-## Inspect & replay webhooks
-
-`passway http <port>` also starts a request inspector at
-**http://127.0.0.1:4040** (if that port is taken it tries 4041 to 4049; the
-CLI prints the address it chose). An explicit `--inspect-addr` is used as given, with no fallback. Every request that goes through the tunnel
-shows up there live, with headers and bodies for both the request and the
-response.
-
-![The Passway inspector](docs/img/inspector.png)
-
-<!-- TODO(week 4): replace the screenshot with a short GIF of capture and replay. -->
-
-- **Replay** sends a captured request to your local app again, unchanged
-  (including headers such as `Stripe-Signature`). The replay appears as a new
-  entry in the list.
-- **Edit & Replay** lets you change the method, path, headers or body first.
-  Edited bodies are sent as UTF-8 text; an unedited body is resent byte for
-  byte.
-- **Copy as cURL** builds a `curl` command for the captured request against
-  your public tunnel URL.
-
-The inspector keeps the last 500 requests in memory and stores at most 1 MB of
-each body (larger bodies are marked truncated, but are always forwarded in
-full). A request whose body the inspector did not see to the end, for example
-because your app answered before reading it, is also marked truncated. A
-truncated body has to be edited before it can be replayed, and WebSocket
-connections cannot be replayed. The inspector listens on loopback only.
+- The inspector keeps the last 500 requests in memory and stores up to 1 MB of
+  each body. Larger bodies are marked truncated but always forwarded in full.
+- A truncated body must be edited before it can be replayed, and WebSocket
+  connections can't be replayed.
+- It listens on loopback only. If port 4040 is taken it tries 4041 to 4049.
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--inspect` | `true` | Run the inspector. Use `--inspect=false` to turn it off. |
-| `--inspect-addr` | `127.0.0.1:4040` | Inspector listen address. Must be a loopback address. |
+| `--inspect-addr` | `127.0.0.1:4040` | Inspector listen address (loopback only). It is used as given, with no fallback. |
 
-## Passway Cloud
+## Plans
 
-Passway Cloud is the hosted version: sign in with GitHub, get a token, and
-every account gets a stable default subdomain.
-
-1. Sign in at the dashboard with GitHub.
-2. Create a CLI token under **CLI tokens**. It is shown once.
-3. `passway login <token>`
-4. `passway http 3000 --server https://<cloud-domain>` prints your public URL.
-   Reserved subdomains from the dashboard work with `--name <subdomain>`.
+The cloud has a Free plan and a paid Pro plan.
 
 | | Free | Pro |
 |---|---|---|
 | Concurrent tunnels | 1 | 5 |
 | Reserved subdomains | 1 | 5 |
-| Bandwidth per month | 1 GiB | 50 GiB |
+| Custom domains | none | 2 |
+| Bandwidth per month | 1 GB | 50 GB |
 | Requests per minute per tunnel | 60 | 600 |
-| Browser warning page | yes, names the owner | no |
+| Browser warning page | yes | no |
 
-These numbers are placeholders until the final plans are set (Pro billing
-arrives in a later milestone; for now an operator sets plans with
-`passway-server admin --db PATH set-plan <login> pro`). A suspended account's tunnels are closed and
-its tunnel hosts show a 403 page.
+The current price is on the [pricing page](https://<domain>/pricing). Billing
+runs through Stripe, and you manage or cancel your subscription from the
+dashboard.
 
-### Running Passway Cloud
+## Self-hosting
 
-Like any relay it needs wildcard DNS and a wildcard TLS certificate for the
-base domain; see [docs/self-hosting.md](docs/self-hosting.md).
+Run your own relay on a domain you control: wildcard DNS
+(`*.tunnels.example.com` and `tunnels.example.com`) pointing at the machine.
 
-`passway-server --mode cloud` (or `PASSWAY_MODE=cloud`) runs the cloud: accounts, a dashboard on the
-base domain and plan limits, all backed by SQLite.
+**Docker:**
 
 ```sh
-export PASSWAY_MODE=cloud
-export PASSWAY_GITHUB_CLIENT_SECRET=...
-passway-server --domain passway.example --db /var/lib/passway/p.db \
-  --github-client-id <id> --tls-addr :443 --tls-cert cert.pem --tls-key key.pem
+docker run -d --name passway --restart unless-stopped \
+  -p 80:8080 -p 443:8443 -v passway:/data \
+  -e PASSWAY_CLOUDFLARE_API_TOKEN=... \
+  ghcr.io/mohammed19n/passway-server \
+  --domain tunnels.example.com --addr :8080 --tls-addr :8443 --public-port 443 \
+  --tls-mode acme --acme-email you@example.com --db /data/passway.db
+
+docker exec passway /passway-server admin --db /data/passway.db token create laptop
 ```
 
-For local development, `--dev-login` adds a passwordless sign-in form at `/auth/dev`. It only works on `localhost` domains:
+**The binary** (from the [releases page](https://github.com/mohammed19n/passway/releases)):
 
 ```sh
-passway-server --mode cloud --domain localhost --addr :8080 --db ./p.db --dev-login
+passway-server --domain tunnels.example.com --addr :80 --tls-addr :443 \
+  --tls-cert fullchain.pem --tls-key privkey.pem --tokens secret1,secret2
 ```
 
-Owner to-dos before a public launch:
+- Clients connect with `passway login <token>` and
+  `passway http 3000 --server https://tunnels.example.com`.
+- Self-hosted is the default mode, so there is no mode flag to set.
+- With `--tls-mode acme` and a Cloudflare API token, the server gets and
+  renews its own wildcard certificate.
 
-- Create a GitHub OAuth app whose callback URL is
-  `<base-url>/auth/github/callback`, and pass its client ID with
-  `--github-client-id` and its secret in `PASSWAY_GITHUB_CLIENT_SECRET`.
-- Put the base domain on the [Public Suffix List](https://publicsuffix.org/).
-  Tunnels are subdomains of the dashboard's domain, so without this browsers
-  share cookies between them.
+[docs/self-hosting.md](docs/self-hosting.md) covers every flag, DNS and TLS,
+systemd, running behind an existing nginx, and the admin commands.
+[docs/deploy.md](docs/deploy.md) is the runbook for the hosted cloud.
 
-| Flag (cloud) | Default | Meaning |
-|---|---|---|
-| `--db` | (required) | SQLite database path. |
-| `--github-client-id`, `--github-client-secret` | (empty) | GitHub OAuth app. The secret may come from `$PASSWAY_GITHUB_CLIENT_SECRET`. |
-| `--base-url` | `<scheme>://<domain>[:port]` | Public dashboard URL. Its host must be `--domain`. |
-| `--min-github-age` | `48h` | Minimum GitHub account age to sign up (`0` disables). |
-| `--free-signup-cap` | `1000` | Free accounts allowed; later signups are waitlisted. A waitlisted user is admitted at their next sign-in once there is room, or by an operator with `passway-server admin --db PATH admit <login>`. |
-| `--free-bandwidth-cap` | `500 GiB` | Monthly bandwidth across all Free accounts, in bytes. |
-| `--dev-login` | `false` | Passwordless dev sign-in (localhost only). |
-| `--legal-operator` | (empty) | Who runs the service, named on `/terms`, `/privacy` and `/aup` (empty renders "the operator of this service"). |
-| `--legal-jurisdiction` | (empty) | Whose laws govern the terms of service, e.g. `England and Wales`. |
-| `--abuse-email` | `abuse@<base host>` | Abuse contact shown on the site. Reports from `/abuse` are stored in the database and logged at WARN. |
+## Development
 
-## Running your own relay
-
-Self-hosted is the default mode (`--mode self-hosted`): a relay with no accounts
-or dashboard, random tunnel names and shared `--tokens`.
+Requires the Go version in `go.mod`.
 
 ```sh
-passway-server --domain tunnels.example.com \
-  --tls-addr :443 --tls-cert cert.pem --tls-key key.pem \
-  --addr :80 --tokens secret1,secret2
+git clone https://github.com/mohammed19n/passway
+cd passway
+go run ./cmd/passway-server --domain localhost      # a relay on :8080
+go run ./cmd/passway http 3000                       # in another terminal
+curl http://<name>.localhost:8080/                   # the name the CLI printed
 ```
 
-Clients authenticate with `passway login <token>` or `PASSWAY_TOKEN`, and pick
-the server with `--server`. The full flag reference, DNS and TLS notes and the
-admin commands are in [docs/self-hosting.md](docs/self-hosting.md).
+To try the cloud flow (accounts, dashboard, plans) locally, run:
 
-## Roadmap
+```sh
+go run ./cmd/passway-server --mode cloud --domain localhost --db ./passway.db --dev-login
+```
 
-Accounts, plans and the dashboard work (milestone 3). Planned, not built yet:
-paid plans with billing, custom domains and an install script.
+Then open http://localhost:8080/auth/dev.
+
+Run the tests with `go test -race ./...`.
 
 ## License
 
-The CLI and the rest of the repository are licensed under the [MIT License](LICENSE).
-The server (`cmd/passway-server`) is licensed under the
-[AGPL-3.0](cmd/passway-server/LICENSE).
+- The CLI, the client and the rest of the repository are under the
+  [MIT License](LICENSE).
+- The server (`cmd/passway-server` and `internal/server`) is under the
+  [AGPL-3.0](cmd/passway-server/LICENSE).
+
+You can run, modify and self-host all of it. If you offer a modified server to
+others as a service, you share your changes.
