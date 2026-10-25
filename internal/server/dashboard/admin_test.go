@@ -24,7 +24,7 @@ func newAdminEnv(t *testing.T) *adminEnv {
 	t.Helper()
 	ae := &adminEnv{}
 	ae.testEnv = newTestEnv(t, func(c *Config) {
-		c.Admins = []string{"Alice"}
+		c.AdminGitHubIDs = []int64{42}
 		c.Now = func() time.Time { return time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC) }
 		c.FreeBandwidthCap = 1000
 		c.Stats = func() AdminStats {
@@ -48,6 +48,29 @@ func TestAdminPageNonAdmin404(t *testing.T) {
 	}
 	if w := e.do("GET", "/admin", nil); w.Code == http.StatusOK {
 		t.Fatalf("signed-out GET /admin = %d", w.Code)
+	}
+}
+
+func TestAdminKeyedOnGitHubID(t *testing.T) {
+	e := newAdminEnv(t)
+	ctx := context.Background()
+	sc, _ := e.signedInAs(t, 42, "alice")
+	if w := e.do("GET", "/admin", nil, sc); w.Code != http.StatusOK {
+		t.Fatalf("admin by id = %d", w.Code)
+	}
+	// alice renames; someone else registers the old login with another GitHub ID.
+	if _, _, err := e.st.UpsertGitHubUser(ctx, store.User{GitHubID: 42, Login: "alice-new"}); err != nil {
+		t.Fatal(err)
+	}
+	if w := e.do("GET", "/admin", nil, sc); w.Code != http.StatusOK {
+		t.Fatalf("renamed admin = %d, want 200", w.Code)
+	}
+	sc2, csrf2 := e.signedInAs(t, 999, "alice")
+	if w := e.do("GET", "/admin", nil, sc2); w.Code != http.StatusNotFound {
+		t.Fatalf("login squatter = %d, want 404", w.Code)
+	}
+	if w := e.post("/admin/resolve", url.Values{"report": {"1"}}, sc2, csrf2); w.Code != http.StatusNotFound {
+		t.Fatalf("squatter POST = %d, want 404", w.Code)
 	}
 }
 

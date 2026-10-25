@@ -117,7 +117,7 @@ It also applies the owner's rulings from the 2026-10-24 handoff review and the c
 
 ## File Structure
 
-- `cmd/passway-server/main.go`: modified by Tasks 1, 2, 5, 7, 9, 10, 11 and 14 (`--mode`, `--block-words`, billing flags, `--proxy-protocol`, the TLS mode, `--admin-logins` and `version`).
+- `cmd/passway-server/main.go`: modified by Tasks 1, 2, 5, 7, 9, 10, 11 and 14 (`--mode`, `--block-words`, billing flags, `--proxy-protocol`, the TLS mode, `--admin-github-ids` and `version`).
 - `cmd/passway-server/admin.go`: arguments are validated before the DB is opened, and the `backup` command is added (Tasks 5 and 14).
 - `internal/server/names.go`: the brand list and look-alike normalisation (Task 2).
 - `internal/server/{plans.go,pages.go,pages/layout.html,edge.go}`: the footer policy and the fast 503 (Task 3).
@@ -785,13 +785,13 @@ It also applies the owner's rulings from the 2026-10-24 handoff review and the c
   // server
   type Stats struct { Tunnels int; ByPlan map[string]int; Requests int64 }
   func (s *Server) Stats() Stats
-  // dashboard.Config gains: Admins []string (GitHub logins, case-insensitive); Stats func() AdminStats; PollBans func()
+  // dashboard.Config gains: AdminGitHubIDs []int64 (numeric GitHub user IDs); Stats func() AdminStats; PollBans func()
   type AdminStats struct { Tunnels int; ByPlan map[string]int; Requests int64 }
   // store
   func (s *Store) Backup(ctx context.Context, dest string) error // VACUUM INTO; error if dest exists
   ```
-- **Flag** `--admin-logins` (comma-separated).
-- **`GET /admin`** (session required, and the user must be in `Admins`, otherwise 404). It shows:
+- **Flag** `--admin-github-ids` (comma-separated).
+- **`GET /admin`** (session required, and the user must be in `AdminGitHubIDs`, otherwise 404). It shows:
   - live tunnels, in total and by plan, and total requests;
   - users by plan and the waitlist count;
   - this month's bandwidth for Free and Pro, with the Free cap percentage;

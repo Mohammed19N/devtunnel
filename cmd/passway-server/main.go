@@ -74,7 +74,7 @@ type cloudOpts struct {
 	minGitHubAge                *time.Duration
 	freeSignupCap               *int
 	freeBandwidthCap            *int64
-	adminLogins                 *string
+	adminGitHubIDs              *string
 	devLogin                    *bool
 	stripePricePro              *string
 	legalOperator               *string
@@ -91,7 +91,7 @@ func cloudFlags(fs *flag.FlagSet) cloudOpts {
 		minGitHubAge:      fs.Duration("min-github-age", 48*time.Hour, "minimum GitHub account age to sign up (0 disables)"),
 		freeSignupCap:     fs.Int("free-signup-cap", 1000, "max Free accounts; further signups are waitlisted"),
 		freeBandwidthCap:  fs.Int64("free-bandwidth-cap", 500<<30, "monthly bandwidth in bytes across all Free accounts"),
-		adminLogins:       fs.String("admin-logins", "", "comma-separated GitHub logins that may open /admin (cloud mode)"),
+		adminGitHubIDs:    fs.String("admin-github-ids", "", "comma-separated GitHub numeric user IDs allowed to open /admin (find yours at https://api.github.com/users/<login>)"),
 		stripePricePro:    fs.String("stripe-price-pro", "", "Stripe price ID of the Pro plan (cloud mode; billing also needs $PASSWAY_STRIPE_SECRET_KEY and $PASSWAY_STRIPE_WEBHOOK_SECRET)"),
 		devLogin:          fs.Bool("dev-login", false, "enable the passwordless /auth/dev login (localhost domains only)"),
 		legalOperator:     fs.String("legal-operator", "", `who runs the service, named on the terms, privacy and acceptable use pages (default "the operator of this service")`),
@@ -140,6 +140,10 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 	}
 	if *domain == "" {
 		return errors.New("--domain is required")
+	}
+	adminIDs, err := parseGitHubIDs(*cf.adminGitHubIDs)
+	if err != nil {
+		return usageError{fmt.Errorf("--admin-github-ids: %w", err)}
 	}
 	if *maxConns < 0 {
 		return usageError{fmt.Errorf("--max-conns-per-tunnel must be >= 0, got %d", *maxConns)}
@@ -350,6 +354,7 @@ func run(ctx context.Context, args []string, stderr io.Writer, ready func(addrs 
 			}
 			return out
 		}
+		dcfg.AdminGitHubIDs = adminIDs
 		dcfg.Stats = func() dashboard.AdminStats {
 			st := srv.Stats()
 			return dashboard.AdminStats{Tunnels: st.Tunnels, ByPlan: st.ByPlan, Requests: st.Requests}
@@ -494,7 +499,6 @@ func (cf cloudOpts) dashboardConfig(st *store.Store, base, secret string) dashbo
 		MinGitHubAge:       *cf.minGitHubAge,
 		FreeSignupCap:      *cf.freeSignupCap,
 		FreeBandwidthCap:   *cf.freeBandwidthCap,
-		Admins:             splitLogins(*cf.adminLogins),
 		DevLogin:           *cf.devLogin,
 		LegalOperator:      *cf.legalOperator,
 		LegalJurisdiction:  *cf.legalJurisdiction,
@@ -502,14 +506,19 @@ func (cf cloudOpts) dashboardConfig(st *store.Store, base, secret string) dashbo
 	}
 }
 
-// splitLogins splits a comma-separated login list, dropping blanks and a
-// leading "@".
-func splitLogins(s string) []string {
-	var out []string
-	for _, l := range strings.Split(s, ",") {
-		if l = strings.TrimPrefix(strings.TrimSpace(l), "@"); l != "" {
-			out = append(out, l)
+// parseGitHubIDs parses a comma-separated list of numeric GitHub user IDs,
+// ignoring blanks. Logins are rejected: they can change hands.
+func parseGitHubIDs(s string) ([]int64, error) {
+	var out []int64
+	for _, f := range strings.Split(s, ",") {
+		if f = strings.TrimSpace(f); f == "" {
+			continue
 		}
+		id, err := strconv.ParseInt(f, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("%q is not a numeric GitHub user ID", f)
+		}
+		out = append(out, id)
 	}
-	return out
+	return out, nil
 }

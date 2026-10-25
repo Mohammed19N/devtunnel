@@ -56,8 +56,9 @@ type Config struct {
 	// removed or verified by a new owner. nil = no-op.
 	DomainEvicted func(host string)
 
-	// Admins are the GitHub logins (case-insensitive) that may use /admin.
-	Admins []string
+	// AdminGitHubIDs are the numeric GitHub user IDs that may use /admin.
+	// IDs, not logins: a login can be renamed and then taken by someone else.
+	AdminGitHubIDs []int64
 	// Stats reports live tunnel activity for /admin; nil = zeros.
 	Stats func() AdminStats
 	// PollBans applies new bans to live tunnels right away; nil = no-op.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -46,11 +47,11 @@ type adminView struct {
 	Month                  string
 }
 
-// adminOnly wraps a handler so that anyone not listed in Config.Admins gets
+// adminOnly wraps a handler so that anyone not listed in Config.AdminGitHubIDs gets
 // the same 404 as an unknown page.
 func (d *Dashboard) adminOnly(h func(http.ResponseWriter, *http.Request, *session)) func(http.ResponseWriter, *http.Request, *session) {
 	return func(w http.ResponseWriter, r *http.Request, s *session) {
-		if !d.isAdmin(s.User.Login) {
+		if !d.isAdmin(s.User.GitHubID) {
 			d.fail(w, http.StatusNotFound, "There's nothing here.")
 			return
 		}
@@ -58,13 +59,8 @@ func (d *Dashboard) adminOnly(h func(http.ResponseWriter, *http.Request, *sessio
 	}
 }
 
-func (d *Dashboard) isAdmin(login string) bool {
-	for _, a := range d.cfg.Admins {
-		if strings.EqualFold(strings.TrimSpace(a), login) && login != "" {
-			return true
-		}
-	}
-	return false
+func (d *Dashboard) isAdmin(githubID int64) bool {
+	return githubID != 0 && slices.Contains(d.cfg.AdminGitHubIDs, githubID)
 }
 
 // safeLink returns raw when it parses as an http(s) URL with a host, else "".

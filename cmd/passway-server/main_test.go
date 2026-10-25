@@ -594,3 +594,16 @@ func TestDashboardConfigLegalFlags(t *testing.T) {
 		t.Fatalf("config = %q %q %q", c.LegalOperator, c.LegalJurisdiction, c.AbuseEmail)
 	}
 }
+
+func TestAdminGitHubIDsParsing(t *testing.T) {
+	err := run(context.Background(), []string{"--domain", "localhost", "--admin-github-ids", "42,abc"}, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "--admin-github-ids") || exitCode(err) != 2 {
+		t.Fatalf("bad id: err = %v, exit %d; want usage error naming the flag, exit 2", err, exitCode(err))
+	}
+	if got, err := parseGitHubIDs(" 42, 7 ,,"); err != nil || len(got) != 2 || got[0] != 42 || got[1] != 7 {
+		t.Fatalf("parseGitHubIDs = %v, %v", got, err)
+	}
+	if _, err := parseGitHubIDs("-5"); err == nil {
+		t.Fatal("negative id accepted")
+	}
+}
