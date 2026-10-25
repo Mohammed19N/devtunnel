@@ -126,11 +126,19 @@ systemd unit, not both.
 ## 3. Back up the nginx config
 
 Take the backup first, before anything under `/etc/nginx` changes. Every
-later step compares against it, and restores from it.
+later step compares against it, and restores from it. Set `B` to the backup
+path here, once:
 
 ```sh
-sudo cp -a /etc/nginx /etc/nginx.bak-$(date +%F)
+B=/etc/nginx.bak-$(date +%F-%H%M); echo "backup: $B"
+sudo test -e "${B:?}" && echo "STOP: $B already exists" || sudo cp -a /etc/nginx "${B:?}"
 ```
+
+**Do §3 to §7 in this same shell.** Every later command uses `$B`, written as
+`"${B:?}"` so that it stops with an error if `B` is unset. An unset `B` would
+make a restore treat `/` as its source. If you open a new shell, set `B` again
+first, to the path echoed above (for example
+`export B=/etc/nginx.bak-2026-10-26-0215`).
 
 ## 4. Prepare the change and show it to the owner
 
@@ -142,7 +150,7 @@ The real test happens in place in §5.
 
 ```sh
 sudo rm -rf /tmp/nginx.new                         # no stale staging copy
-sudo cp -a /etc/nginx.bak-$(date +%F) /tmp/nginx.new
+sudo cp -a "${B:?}" /tmp/nginx.new
 sudo install -d /tmp/nginx.new/passway
 sudo install -m 0644 deploy/nginx/passway-stream.conf deploy/nginx/passway-http.conf /tmp/nginx.new/passway/
 ```
@@ -195,7 +203,7 @@ In `/tmp/nginx.new`:
    explicit yes:**
 
    ```sh
-   sudo diff -ruN /etc/nginx.bak-$(date +%F) /tmp/nginx.new
+   sudo diff -ruN "${B:?}" /tmp/nginx.new
    ```
 
    This changes how the owner's other apps are served, so it is never applied
@@ -208,8 +216,20 @@ passes on the files in their real place.** nginx keeps serving the config it
 loaded at its last start or reload, so editing files on disk changes nothing
 for visitors until the reload.
 
+First, check that nothing changed the live config since the §3 backup.
+certbot renewals, package updates or another admin might have, and the apply
+below would silently revert their changes:
+
 ```sh
-B=/etc/nginx.bak-$(date +%F)          # the §3 backup
+sudo diff -r "${B:?}" /etc/nginx && echo "unchanged since the backup"
+```
+
+It must print no differences. If anything differs, stop: start again from §3
+with a new backup, redo the edits in §4, and get a fresh yes on the new diff.
+
+Then apply and test:
+
+```sh
 sudo rsync -a --delete /tmp/nginx.new/ /etc/nginx/   # the approved edits, in place; no reload
 sudo nginx -t                                         # tests the real paths
 ```
@@ -218,7 +238,7 @@ sudo nginx -t                                         # tests the real paths
   restored files pass again:
 
   ```sh
-  sudo rsync -a --delete "$B"/ /etc/nginx/
+  sudo rsync -a --delete "${B:?}"/ /etc/nginx/
   sudo nginx -t                                       # must pass: the old config
   ```
 
@@ -276,7 +296,7 @@ exactly as before.
 If any check fails and the fix isn't obvious within the window, roll back:
 
 ```sh
-sudo rsync -a --delete /etc/nginx.bak-<date>/ /etc/nginx/
+sudo rsync -a --delete "${B:?}"/ /etc/nginx/   # B as set in §3
 sudo nginx -t && sudo systemctl restart nginx
 ```
 
