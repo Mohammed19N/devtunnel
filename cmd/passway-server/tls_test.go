@@ -111,8 +111,9 @@ func TestNewCertManagerDecision(t *testing.T) {
 	}
 
 	// Through the real handshake path: a random SNI is refused, not issued.
-	mctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// Management is not started: certmagic's background jobs keep writing
+	// lock files in the storage dir after cancel, racing the TempDir
+	// cleanup (FLAKE4), and refusing a name needs no management.
 	var logs lockedBuf
 	dlog := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	defer func() {
@@ -120,10 +121,12 @@ func TestNewCertManagerDecision(t *testing.T) {
 			t.Error("the Cloudflare token was logged")
 		}
 	}()
-	tc, h, err := newCertManager(mctx, "passway.test", testACME(t), st, dlog)
+	dcm, err := buildCertManager("passway.test", testACME(t), st, dlog)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer dcm.cache.Stop()
+	tc, h := dcm.tlsConfig(), dcm.httpChallenge()
 	if tc.MinVersion < tls.VersionTLS12 || tc.GetCertificate == nil {
 		t.Fatalf("tls config = %+v", tc)
 	}

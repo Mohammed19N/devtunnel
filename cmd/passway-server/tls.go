@@ -226,16 +226,31 @@ func newCertManager(ctx context.Context, domain string, o acmeOpts, st *store.St
 	if err != nil {
 		return nil, nil, err
 	}
+	if err := cm.manage(ctx); err != nil {
+		return nil, nil, err
+	}
+	return cm.tlsConfig(), cm.httpChallenge(), nil
+}
+
+// manage starts obtaining and renewing <domain> and *.<domain> until ctx is
+// done.
+func (cm *certManager) manage(ctx context.Context) error {
 	if err := cm.wildcard.ManageAsync(ctx, []string{cm.domain, "*." + cm.domain}); err != nil {
 		cm.cache.Stop()
-		return nil, nil, fmt.Errorf("acme: manage %s: %w", cm.domain, err)
+		return fmt.Errorf("acme: manage %s: %w", cm.domain, err)
 	}
 	go func() { <-ctx.Done(); cm.cache.Stop() }()
+	return nil
+}
+
+// tlsConfig is the TLS listener's config: certificates come from
+// getCertificate, and acme-tls/1 is offered for TLS-ALPN challenges.
+func (cm *certManager) tlsConfig() *tls.Config {
 	tc := cm.wildcard.TLSConfig() // carries acme-tls/1 for TLS-ALPN challenges
 	tc.GetCertificate = cm.getCertificate
 	tc.NextProtos = append([]string{"http/1.1"}, tc.NextProtos...)
 	tc.MinVersion = tls.VersionTLS12
-	return tc, cm.httpChallenge(), nil
+	return tc
 }
 
 // acmeHTTPHandler sends ACME HTTP-01 challenge requests to challenge and
