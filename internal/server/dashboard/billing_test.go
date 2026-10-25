@@ -110,9 +110,34 @@ func TestCheckoutReusesCustomer(t *testing.T) {
 	if w := e.webhook(checkoutEvent(u.ID), whSig(checkoutEvent(u.ID), whSecret, time.Now().Unix())); w.Code != 200 {
 		t.Fatalf("webhook %d", w.Code)
 	}
-	e.post("/billing/checkout", nil, sc, csrf)
+	// A returning customer (subscription ended) checks out again as itself.
+	ended := `{"id":"evt_2","type":"customer.subscription.deleted","created":101,"data":{"object":{"id":"sub_1","customer":"cus_1","status":"canceled"}}}`
+	if w := e.webhook(ended, whSig(ended, whSecret, time.Now().Unix())); w.Code != 200 {
+		t.Fatalf("webhook %d", w.Code)
+	}
+	if w := e.post("/billing/checkout", nil, sc, csrf); w.Code != 303 {
+		t.Fatalf("checkout after cancel = %d %s", w.Code, w.Body)
+	}
 	if got := fs.got("/v1/checkout/sessions").Get("customer"); got != "cus_1" {
 		t.Fatalf("customer = %q", got)
+	}
+}
+
+// A second checkout while a subscription keeps Pro would start a second paid
+// subscription (review M2): refuse it with 409 and never call Stripe.
+func TestCheckoutRefusedWhileSubscribed(t *testing.T) {
+	e, fs := billingEnv(t, nil)
+	sc, csrf := e.signedIn(t)
+	u := mustUser(t, e, "alice")
+	if w := e.webhook(checkoutEvent(u.ID), whSig(checkoutEvent(u.ID), whSecret, time.Now().Unix())); w.Code != 200 {
+		t.Fatalf("webhook %d", w.Code)
+	}
+	w := e.post("/billing/checkout", nil, sc, csrf)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already on Pro") {
+		t.Fatalf("second checkout = %d %s", w.Code, w.Body)
+	}
+	if f := fs.got("/v1/checkout/sessions"); f != nil {
+		t.Fatalf("Stripe checkout was called: %v", f)
 	}
 }
 

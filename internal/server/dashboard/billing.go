@@ -21,6 +21,11 @@ func (d *Dashboard) handleCheckout(w http.ResponseWriter, r *http.Request, s *se
 	}
 	sub, err := d.cfg.Store.SubscriptionByUser(r.Context(), s.User.ID)
 	switch {
+	case err == nil && billing.ProStatus(sub.Status):
+		// A second Checkout would start a second paid subscription, and the
+		// webhook tracks only the newest one.
+		d.fail(w, http.StatusConflict, "You're already on Pro. Use Manage billing on the dashboard to change or cancel your subscription.")
+		return
 	case err == nil:
 		p.CustomerID = sub.CustomerID
 	case !errors.Is(err, store.ErrNotFound):

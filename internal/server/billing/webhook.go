@@ -101,8 +101,9 @@ func parseEvent(payload []byte) (Event, error) {
 	return Event{ID: env.ID, Type: env.Type, Created: env.Created, Data: env.Data.Object}, nil
 }
 
-// proStatus reports whether a subscription in this status keeps Pro.
-func proStatus(s string) bool {
+// ProStatus reports whether a subscription in this status keeps Pro (and is
+// still billed).
+func ProStatus(s string) bool {
 	return s == "active" || s == "trialing" || s == "past_due"
 }
 
@@ -232,8 +233,8 @@ func (a applier) subscription() error {
 	}
 	deleted := a.ev.Type == "customer.subscription.deleted"
 	created := a.ev.Type == "customer.subscription.created"
-	pro := proStatus(s.Status) && !deleted
-	storedPro := proStatus(stored.Status)
+	pro := ProStatus(s.Status) && !deleted
+	storedPro := ProStatus(stored.Status)
 	current := stored.SubscriptionID == "" || s.ID == stored.SubscriptionID
 	switch {
 	case !current && !(created && pro):
